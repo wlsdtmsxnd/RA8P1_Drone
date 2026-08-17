@@ -34,8 +34,8 @@
 /* 20 Hz、51 通道：原始首读/复读、是否替换以及滤波后三轴。 */
 #define TELEMETRY_CHANNEL_COUNT      (51U)
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-/* 系留短跳以 50 Hz 发送精简的 14 通道关键数据。 */
-#define TELEMETRY_CHANNEL_COUNT      (14U)
+/* 系留短跳以 50 Hz 发送精简的 15 通道关键数据。 */
+#define TELEMETRY_CHANNEL_COUNT      (15U)
 #else
 /* 普通模式使用 8 个数据通道。 */
 #define TELEMETRY_CHANNEL_COUNT      (8U)
@@ -207,7 +207,7 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[4] = command.throttle;
         channel_data[5] = attitude.roll_deg;
         channel_data[6] = attitude.pitch_deg;
-        channel_data[7] = attitude.yaw_deg;
+        channel_data[7] = command.roll;
         channel_data[8] = fmaxf(fabsf(attitude.gyro_x_dps),
                                 fmaxf(fabsf(attitude.gyro_y_dps),
                                       fabsf(attitude.gyro_z_dps)));
@@ -216,6 +216,7 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[11] = (float) raw_diagnostic.replacement_count;
         channel_data[12] = (float) raw_diagnostic.reread_failure_count;
         channel_data[13] = control_status.valid ? 1.0f : 0.0f;
+        channel_data[14] = (float) flight_safety_get_stop_reason();
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
         for (channel_index = 0U;
              channel_index < MOTOR_OUTPUT_COUNT;

@@ -189,11 +189,16 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_TEST_OUTPUT_MAX_US             (1570.0f)
 #define FLIGHT_TEST_TILT_CUTOFF_DEG           (10.0f)
 #define FLIGHT_TEST_RATE_CUTOFF_DPS           (100.0f)
-#define FLIGHT_TEST_ANGLE_KP_DPS_PER_DEG      (0.40f)
-#define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.22f)
-#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.30f)
+#define FLIGHT_TEST_RATE_IMMEDIATE_DPS        (300.0f)
+#define TETHERED_RATE_CONFIRM_UPDATES          (10U) /* 500 Hz 下 20 ms。 */
+#define TETHERED_RATE_IMMEDIATE_UPDATES        (2U)  /* 500 Hz 下 4 ms。 */
+#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (3.0f)
+#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (3.0f)
+#define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.30f)
+#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.40f)
 #define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.20f)
-#define FLIGHT_TEST_RATE_TARGET_LIMIT_DPS     (10.0f)
+#define FLIGHT_TEST_ROLL_RATE_TARGET_LIMIT_DPS  (10.0f)
+#define FLIGHT_TEST_PITCH_RATE_TARGET_LIMIT_DPS (20.0f)
 #else
 /* 历史三轴综合台架参数，仅用于拆桨验证，不作为飞行参数。 */
 #if ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL) || \
@@ -217,11 +222,13 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_TEST_TILT_CUTOFF_DEG           (20.0f)
 #define FLIGHT_TEST_RATE_CUTOFF_DPS           (150.0f)
 #endif
-#define FLIGHT_TEST_ANGLE_KP_DPS_PER_DEG      (3.0f)
+#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (3.0f)
+#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (3.0f)
 #define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.25f)
 #define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.25f)
 #define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.25f)
-#define FLIGHT_TEST_RATE_TARGET_LIMIT_DPS     (45.0f)
+#define FLIGHT_TEST_ROLL_RATE_TARGET_LIMIT_DPS  (45.0f)
+#define FLIGHT_TEST_PITCH_RATE_TARGET_LIMIT_DPS (45.0f)
 #define FLIGHT_TEST_OUTPUT_MIN_US             (1100.0f)
 #endif
 #define FLIGHT_TEST_ANGLE_KI_DPS_PER_DEG_S    (0.0f)
@@ -264,6 +271,8 @@ static float g_powered_output_us[MOTOR_OUTPUT_COUNT] =
 
 static float g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
 static bool g_tethered_fault_latched = false;
+static uint32_t g_tethered_rate_count[3] = {0U, 0U, 0U};
+static uint32_t g_tethered_rate_immediate_count[3] = {0U, 0U, 0U};
 #endif
 
 
@@ -293,18 +302,18 @@ static void flight_control_configure_controllers(void)
     }
 
     pid_controller_configure(&g_roll_angle_controller,
-                             FLIGHT_TEST_ANGLE_KP_DPS_PER_DEG,
+                             FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG,
                              FLIGHT_TEST_ANGLE_KI_DPS_PER_DEG_S,
                              FLIGHT_TEST_ANGLE_KD_DPS_S_PER_DEG,
                              0.0f,
-                             FLIGHT_TEST_RATE_TARGET_LIMIT_DPS,
+                             FLIGHT_TEST_ROLL_RATE_TARGET_LIMIT_DPS,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     pid_controller_configure(&g_pitch_angle_controller,
-                             FLIGHT_TEST_ANGLE_KP_DPS_PER_DEG,
+                             FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG,
                              FLIGHT_TEST_ANGLE_KI_DPS_PER_DEG_S,
                              FLIGHT_TEST_ANGLE_KD_DPS_S_PER_DEG,
                              0.0f,
-                             FLIGHT_TEST_RATE_TARGET_LIMIT_DPS,
+                             FLIGHT_TEST_PITCH_RATE_TARGET_LIMIT_DPS,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     pid_controller_configure(&g_roll_rate_controller,
                              FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS,
@@ -358,6 +367,12 @@ static uint32_t flight_test_to_us(float value)
 static void flight_control_reset_tethered_base(void)
 {
     g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
+    g_tethered_rate_count[0] = 0U;
+    g_tethered_rate_count[1] = 0U;
+    g_tethered_rate_count[2] = 0U;
+    g_tethered_rate_immediate_count[0] = 0U;
+    g_tethered_rate_immediate_count[1] = 0U;
+    g_tethered_rate_immediate_count[2] = 0U;
 }
 
 
@@ -388,9 +403,55 @@ static float flight_control_slew_tethered_base(float target_us)
 }
 
 
+/*
+ * 单个桨载振动尖峰不再直接停机：100..300 dps 需持续 20 ms，
+ * 超过 300 dps 也需连续两帧。恢复到 100 dps 内立即清零该轴计数。
+ */
+static bool flight_control_tethered_rate_fault(float rate_dps,
+                                                uint32_t axis_index)
+{
+    float absolute_rate_dps = fabsf(rate_dps);
+
+    if (absolute_rate_dps <= FLIGHT_TEST_RATE_CUTOFF_DPS)
+    {
+        g_tethered_rate_count[axis_index] = 0U;
+        g_tethered_rate_immediate_count[axis_index] = 0U;
+        return false;
+    }
+
+    if (g_tethered_rate_count[axis_index] <
+        TETHERED_RATE_CONFIRM_UPDATES)
+    {
+        g_tethered_rate_count[axis_index]++;
+    }
+
+    if (absolute_rate_dps > FLIGHT_TEST_RATE_IMMEDIATE_DPS)
+    {
+        if (g_tethered_rate_immediate_count[axis_index] <
+            TETHERED_RATE_IMMEDIATE_UPDATES)
+        {
+            g_tethered_rate_immediate_count[axis_index]++;
+        }
+    }
+    else
+    {
+        g_tethered_rate_immediate_count[axis_index] = 0U;
+    }
+
+    return ((g_tethered_rate_count[axis_index] >=
+             TETHERED_RATE_CONFIRM_UPDATES) ||
+            (g_tethered_rate_immediate_count[axis_index] >=
+             TETHERED_RATE_IMMEDIATE_UPDATES));
+}
+
+
 static flight_control_fault_reason_t flight_control_tethered_fault_reason(
     const imu_attitude_t * p_attitude)
 {
+    bool roll_rate_fault;
+    bool pitch_rate_fault;
+    bool yaw_rate_fault;
+
     if ((0 == isfinite(p_attitude->roll_deg)) ||
         (0 == isfinite(p_attitude->pitch_deg)) ||
         (0 == isfinite(p_attitude->gyro_x_dps)) ||
@@ -410,17 +471,27 @@ static flight_control_fault_reason_t flight_control_tethered_fault_reason(
         return FLIGHT_CONTROL_FAULT_PITCH_TILT;
     }
 
-    if (fabsf(p_attitude->gyro_x_dps) > FLIGHT_TEST_RATE_CUTOFF_DPS)
+    roll_rate_fault = flight_control_tethered_rate_fault(
+        p_attitude->gyro_x_dps,
+        0U);
+    pitch_rate_fault = flight_control_tethered_rate_fault(
+        p_attitude->gyro_y_dps,
+        1U);
+    yaw_rate_fault = flight_control_tethered_rate_fault(
+        p_attitude->gyro_z_dps,
+        2U);
+
+    if (true == roll_rate_fault)
     {
         return FLIGHT_CONTROL_FAULT_ROLL_RATE;
     }
 
-    if (fabsf(p_attitude->gyro_y_dps) > FLIGHT_TEST_RATE_CUTOFF_DPS)
+    if (true == pitch_rate_fault)
     {
         return FLIGHT_CONTROL_FAULT_PITCH_RATE;
     }
 
-    if (fabsf(p_attitude->gyro_z_dps) > FLIGHT_TEST_RATE_CUTOFF_DPS)
+    if (true == yaw_rate_fault)
     {
         return FLIGHT_CONTROL_FAULT_YAW_RATE;
     }

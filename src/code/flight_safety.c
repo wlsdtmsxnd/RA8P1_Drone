@@ -24,6 +24,8 @@ volatile flight_safety_state_t g_flight_safety_state =
 
 static TickType_t g_arm_start_tick = 0U;
 static bool g_seen_arm_switch_low = false;
+static flight_safety_stop_reason_t g_stop_reason =
+    FLIGHT_SAFETY_STOP_NONE;
 
 
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
@@ -55,9 +57,21 @@ static void flight_safety_stop(flight_safety_state_t state)
 }
 
 
+/* 只锁存从 ARMED 离开的原因，避免静置撤防状态反复覆盖证据。 */
+static void flight_safety_latch_stop_reason(
+    flight_safety_stop_reason_t reason)
+{
+    if (FLIGHT_SAFETY_ARMED == g_flight_safety_state)
+    {
+        g_stop_reason = reason;
+    }
+}
+
+
 void flight_safety_init(void)
 {
     g_seen_arm_switch_low = false;
+    g_stop_reason = FLIGHT_SAFETY_STOP_NONE;
     flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
 }
 
@@ -69,9 +83,19 @@ void flight_safety_update(bool imu_healthy)
 
     rc_command_get(&command);
 
-    if ((false == imu_healthy) ||
-        (false == command.connected))
+    if (false == imu_healthy)
     {
+        flight_safety_latch_stop_reason(
+            FLIGHT_SAFETY_STOP_IMU_UNHEALTHY);
+        g_seen_arm_switch_low = false;
+        flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
+        return;
+    }
+
+    if (false == command.connected)
+    {
+        flight_safety_latch_stop_reason(
+            FLIGHT_SAFETY_STOP_RC_LOSS);
         g_seen_arm_switch_low = false;
         flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
         return;
@@ -79,6 +103,8 @@ void flight_safety_update(bool imu_healthy)
 
     if (true == command.arm_switch_low)
     {
+        flight_safety_latch_stop_reason(
+            FLIGHT_SAFETY_STOP_ARM_SWITCH_LOW);
         g_seen_arm_switch_low = true;
         flight_safety_stop(FLIGHT_SAFETY_DISARMED);
         return;
@@ -88,6 +114,8 @@ void flight_safety_update(bool imu_healthy)
     {
         if (false == command.arm_switch_high)
         {
+            flight_safety_latch_stop_reason(
+                FLIGHT_SAFETY_STOP_ARM_SWITCH_NOT_HIGH);
             flight_safety_stop(FLIGHT_SAFETY_DISARMED);
         }
 
@@ -126,6 +154,7 @@ void flight_safety_update(bool imu_healthy)
                  RC_ARM_HOLD_TIME_TICKS)
         {
             g_flight_safety_state = FLIGHT_SAFETY_ARMED;
+            g_stop_reason = FLIGHT_SAFETY_STOP_NONE;
             imu_zero_yaw();
         }
 
@@ -139,6 +168,12 @@ void flight_safety_update(bool imu_healthy)
 flight_safety_state_t flight_safety_get_state(void)
 {
     return g_flight_safety_state;
+}
+
+
+flight_safety_stop_reason_t flight_safety_get_stop_reason(void)
+{
+    return g_stop_reason;
 }
 
 
