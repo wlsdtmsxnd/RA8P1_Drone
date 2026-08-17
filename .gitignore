@@ -1,0 +1,48 @@
+# Build directories and outputs
+/Debug/
+**/Debug/
+**/Objects/
+**/Listings/
+**/build/
+**/out/
+
+# Compiler and linker outputs
+*.o
+*.obj
+*.d
+*.dep
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.lnp
+*.crf
+*.srec
+*.rpd
+*.sbd
+*.build_log.htm
+
+# e2 studio / debug-probe per-user state
+JLinkLog.log
+*.jlink
+*.launch
+JLinkSettings.ini
+*.uvguix.*
+*.uvoptx
+.api_xml
+
+# Python, editor and OS noise
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.user
+*.suo
+*.log
+*~
+
+# Local scratch
+/tmp/

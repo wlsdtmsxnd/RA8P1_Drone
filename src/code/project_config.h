@@ -1,0 +1,32 @@
+#ifndef CODE_PROJECT_CONFIG_H_
+#define CODE_PROJECT_CONFIG_H_
+
+#define ESC_BENCH_MODE_DISABLED          (0U)
+#define ESC_BENCH_MODE_CALIBRATION       (1U)
+#define ESC_BENCH_MODE_MOTOR_SEQUENCE    (2U)
+
+/* 正常固件必须保持 DISABLED/0U。 */
+#define ESC_BENCH_MODE                   ESC_BENCH_MODE_DISABLED
+#define ESC_BENCH_SAFETY_ACKNOWLEDGED    (0U)
+
+#define TELEMETRY_SOURCE_CRSF            (0U)
+#define TELEMETRY_SOURCE_EULER           (1U)
+#define TELEMETRY_SOURCE                 TELEMETRY_SOURCE_CRSF
+
+#if ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) && \
+     (ESC_BENCH_MODE != ESC_BENCH_MODE_CALIBRATION) && \
+     (ESC_BENCH_MODE != ESC_BENCH_MODE_MOTOR_SEQUENCE))
+#error "Invalid ESC_BENCH_MODE"
+#endif
+
+#if ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) && \
+     (ESC_BENCH_SAFETY_ACKNOWLEDGED != 1U))
+#error "Remove all propellers before acknowledging ESC bench mode"
+#endif
+
+#if ((TELEMETRY_SOURCE != TELEMETRY_SOURCE_CRSF) && \
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_EULER))
+#error "Invalid TELEMETRY_SOURCE"
+#endif
+
+#endif /* CODE_PROJECT_CONFIG_H_ */
