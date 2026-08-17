@@ -204,33 +204,37 @@ static icm42688_status_t imu_read_guarded_raw(
             }
         }
 
-#if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
+        taskENTER_CRITICAL();
+        g_raw_diagnostic.capture_count++;
+        if (true == used_reread)
+        {
+            g_raw_diagnostic.replacement_count++;
+        }
+        if (ICM42688_STATUS_OK != reread_status)
+        {
+            g_raw_diagnostic.reread_failure_count++;
+        }
         if (false == g_raw_diagnostic.valid)
         {
-        taskENTER_CRITICAL();
-        g_raw_diagnostic.first = first;
-        g_raw_diagnostic.reread = reread;
-        g_raw_diagnostic.capture_count++;
-        g_raw_diagnostic.capture_tick = (uint32_t) xTaskGetTickCount();
-        g_raw_diagnostic.trigger_mask = trigger_mask;
-        g_raw_diagnostic.reread_status = (uint32_t) reread_status;
-        g_raw_diagnostic.differing_byte_count = differing_byte_count;
-        g_raw_diagnostic.used_reread = used_reread;
-        g_raw_diagnostic.valid = true;
-        taskEXIT_CRITICAL();
+            g_raw_diagnostic.first = first;
+            g_raw_diagnostic.reread = reread;
+            g_raw_diagnostic.capture_tick = (uint32_t) xTaskGetTickCount();
+            g_raw_diagnostic.trigger_mask = trigger_mask;
+            g_raw_diagnostic.reread_status = (uint32_t) reread_status;
+            g_raw_diagnostic.differing_byte_count = differing_byte_count;
+            g_raw_diagnostic.used_reread = used_reread;
+            g_raw_diagnostic.valid = true;
         }
-#endif
+        taskEXIT_CRITICAL();
     }
 
     *p_accepted = used_reread ? reread : first;
     g_previous_raw = *p_accepted;
     g_previous_raw_valid = true;
 
-#if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
     taskENTER_CRITICAL();
     g_raw_diagnostic.current = *p_accepted;
     taskEXIT_CRITICAL();
-#endif
 
     return ICM42688_STATUS_OK;
 }

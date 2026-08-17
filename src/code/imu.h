@@ -60,6 +60,8 @@ typedef struct
     icm42688_raw_data_t first;
     icm42688_raw_data_t reread;
     uint32_t capture_count;
+    uint32_t replacement_count;
+    uint32_t reread_failure_count;
     uint32_t capture_tick;
     uint32_t trigger_mask;
     uint32_t reread_status;

@@ -178,20 +178,20 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
 /*
  * 10 英寸本机首次系留短跳参数。只使用 P 项；慢斜坡仅作用于基础油门，
- * 姿态修正保持 500 Hz 实时响应。1450 us 是第二轮基础油门硬上限。
+ * 姿态修正保持 500 Hz 实时响应。1550 us 是本轮基础油门硬上限。
  */
 #define FLIGHT_TEST_BASE_MIN_US               (1150.0f)
-#define FLIGHT_TEST_BASE_MAX_US               (1450.0f)
+#define FLIGHT_TEST_BASE_MAX_US               (1550.0f)
 #define FLIGHT_TEST_TARGET_ANGLE_DEG          (3.0f)
 #define FLIGHT_TEST_YAW_RATE_LIMIT_DPS        (10.0f)
 #define FLIGHT_TEST_CORRECTION_LIMIT_US       (20.0f)
 #define FLIGHT_TEST_OUTPUT_MIN_US             (1000.0f)
-#define FLIGHT_TEST_OUTPUT_MAX_US             (1470.0f)
+#define FLIGHT_TEST_OUTPUT_MAX_US             (1570.0f)
 #define FLIGHT_TEST_TILT_CUTOFF_DEG           (10.0f)
 #define FLIGHT_TEST_RATE_CUTOFF_DPS           (100.0f)
 #define FLIGHT_TEST_ANGLE_KP_DPS_PER_DEG      (0.40f)
 #define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.22f)
-#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.22f)
+#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.30f)
 #define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.20f)
 #define FLIGHT_TEST_RATE_TARGET_LIMIT_DPS     (10.0f)
 #else

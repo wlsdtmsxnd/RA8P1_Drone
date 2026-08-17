@@ -13,6 +13,7 @@
 #include "driver/up_tof.h"
 
 #include <string.h>
+#include <math.h>
 
 /* 桨载振动模式记录控制器实际看到的 40 Hz 带限角速度，提升到 100 Hz。 */
 #if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
@@ -33,8 +34,8 @@
 /* 20 Hz、51 通道：原始首读/复读、是否替换以及滤波后三轴。 */
 #define TELEMETRY_CHANNEL_COUNT      (51U)
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-/* 系留短跳以 50 Hz 发送完整的 17 通道控制、姿态和锁存故障码。 */
-#define TELEMETRY_CHANNEL_COUNT      (17U)
+/* 系留短跳以 50 Hz 发送精简的 14 通道关键数据。 */
+#define TELEMETRY_CHANNEL_COUNT      (14U)
 #else
 /* 普通模式使用 8 个数据通道。 */
 #define TELEMETRY_CHANNEL_COUNT      (8U)
@@ -64,6 +65,7 @@ void telemetry_thread_entry(void * pvParameters)
     imu_attitude_t attitude;                           /* 系留姿态与角速度快照。 */
     flight_control_status_t control_status;            /* 系留控制器状态。 */
     rc_command_t command;                              /* 系留遥控指令。 */
+    imu_raw_diagnostic_t raw_diagnostic;               /* 原始守卫累计状态。 */
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
     imu_attitude_t attitude;                           /* 桨载滤波角速度快照。 */
 #else
@@ -201,19 +203,19 @@ void telemetry_thread_entry(void * pvParameters)
         imu_get_attitude(&attitude);
         flight_control_get_status(&control_status);
         rc_command_get(&command);
-        channel_data[4] = control_status.base_us;
+        imu_get_raw_diagnostic(&raw_diagnostic);
+        channel_data[4] = command.throttle;
         channel_data[5] = attitude.roll_deg;
         channel_data[6] = attitude.pitch_deg;
-        channel_data[7] = attitude.gyro_x_dps;
-        channel_data[8] = attitude.gyro_y_dps;
-        channel_data[9] = attitude.gyro_z_dps;
-        channel_data[10] = control_status.roll_correction_us;
-        channel_data[11] = control_status.pitch_correction_us;
-        channel_data[12] = control_status.yaw_correction_us;
-        channel_data[13] = command.throttle;
-        channel_data[14] = control_status.valid ? 1.0f : 0.0f;
-        channel_data[15] = (float) flight_safety_get_state();
-        channel_data[16] = (float) control_status.fault_reason;
+        channel_data[7] = attitude.yaw_deg;
+        channel_data[8] = fmaxf(fabsf(attitude.gyro_x_dps),
+                                fmaxf(fabsf(attitude.gyro_y_dps),
+                                      fabsf(attitude.gyro_z_dps)));
+        channel_data[9] = (float) flight_safety_get_state();
+        channel_data[10] = (float) control_status.fault_reason;
+        channel_data[11] = (float) raw_diagnostic.replacement_count;
+        channel_data[12] = (float) raw_diagnostic.reread_failure_count;
+        channel_data[13] = control_status.valid ? 1.0f : 0.0f;
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
         for (channel_index = 0U;
              channel_index < MOTOR_OUTPUT_COUNT;
