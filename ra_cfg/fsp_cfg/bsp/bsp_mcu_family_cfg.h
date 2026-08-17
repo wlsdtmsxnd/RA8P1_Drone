@@ -96,7 +96,7 @@
 #ifndef BSP_TZ_CFG_PSARB
 #define BSP_TZ_CFG_PSARB (\
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 4) /* I3C */ | \
-            (((1 > 0) ? 0U : 1U) << 7) /* IIC2 */ | \
+            (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 7) /* IIC2 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 8) /* IIC1 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 9) /* IIC0 */ | \
             (((RA_NOT_DEFINED > 0) ? 0U : 1U) << 11) /* USBFS */ | \

@@ -1,8 +1,15 @@
 #include "imu_thread.h"
 #include "code/esc_bench_test.h"
 #include "code/flight_safety.h"
+#include "code/flight_control.h"
 #include "code/imu.h"
+#include "code/imu_feedback_bench_test.h"
+#include "code/imu_cascade_bench_test.h"
+#include "code/imu_rate_bench_test.h"
+#include "code/mixer_bench_test.h"
 #include "code/project_config.h"
+#include "code/rc_attitude_bench_test.h"
+#include "code/rc_yaw_rate_bench_test.h"
 #include "driver/motor_output.h"
 
 /* ICM42688 软件片选引脚：P710。 */
@@ -70,6 +77,24 @@ void imu_thread_entry(void * pvParameters)
 
         /* IMU 错误、遥控失联或未满足解锁条件都会强制 1000 us。 */
         flight_safety_update(IMU_STATUS_OK == imu_status);
+
+#if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_STICK_MIXER)
+        mixer_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_LEVEL)
+        imu_feedback_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_RATE)
+        imu_rate_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_CASCADE)
+        imu_cascade_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_ATTITUDE)
+        rc_attitude_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_YAW_RATE)
+        rc_yaw_rate_bench_test_update(IMU_STATUS_OK == imu_status);
+#elif ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_FULL_CONTROL) || \
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL) || \
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_SHADOW_CONTROL))
+        flight_control_update(IMU_STATUS_OK == imu_status);
+#endif
 
         /*
          * 绝对周期延时，减少任务执行时间引起的周期累计误差。

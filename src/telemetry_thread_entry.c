@@ -1,6 +1,7 @@
 #include "telemetry_thread.h"
 
 #include "code/esc_bench_test.h"
+#include "code/flight_control.h"
 #include "code/flight_safety.h"
 #include "code/imu.h"
 #include "code/project_config.h"
@@ -49,8 +50,23 @@ void telemetry_thread_entry(void * pvParameters)
     gps_data_t gps_data;                               /* GPS 定位数据快照。 */
 #elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_FLOW_TOF)
     up_tof_data_t flow_data;                           /* 光流 TOF 数据快照。 */
-#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_MOTOR_OUTPUT)
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_FLIGHT_CONTROL)
+    flight_control_status_t control_status;            /* 影子控制计算快照。 */
     rc_command_t command;                              /* 归一化遥控指令。 */
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_MOTOR_OUTPUT)
+#if ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_LEVEL) || \
+     (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_RATE) || \
+     (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_CASCADE) || \
+     (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_ATTITUDE) || \
+     (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_YAW_RATE))
+    imu_attitude_t attitude;                           /* IMU 台架测试快照。 */
+#if ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_ATTITUDE) || \
+     (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_YAW_RATE))
+    rc_command_t command;                              /* 遥控姿态测试指令。 */
+#endif
+#else
+    rc_command_t command;                              /* 归一化遥控指令。 */
+#endif
 #else
     crsf_data_t rc_data;                               /* CRSF 遥控数据快照。 */
 #endif
@@ -136,8 +152,18 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[3] = (float) flow_data.flow_x_integral;
         channel_data[4] = (float) flow_data.flow_y_integral;
         channel_data[5] = flow_data.valid ? (float) flow_data.tof_confidence : 0.0f;
-#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_MOTOR_OUTPUT)
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_FLIGHT_CONTROL)
+        flight_control_get_status(&control_status);
         rc_command_get(&command);
+        channel_data[0] = control_status.roll_correction_us;
+        channel_data[1] = control_status.pitch_correction_us;
+        channel_data[2] = control_status.yaw_correction_us;
+        channel_data[3] = control_status.base_us;
+        channel_data[4] = command.roll;
+        channel_data[5] = command.pitch;
+        channel_data[6] = command.yaw;
+        channel_data[7] = (float) flight_safety_get_state();
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_MOTOR_OUTPUT)
         for (channel_index = 0U;
              channel_index < MOTOR_OUTPUT_COUNT;
              channel_index++)
@@ -145,8 +171,48 @@ void telemetry_thread_entry(void * pvParameters)
             channel_data[channel_index] =
                 (float) motor_output_get_us(channel_index);
         }
+#if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_LEVEL)
+        imu_get_attitude(&attitude);
+        channel_data[4] = attitude.roll_deg;
+        channel_data[5] = attitude.pitch_deg;
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_RATE)
+        imu_get_attitude(&attitude);
+        channel_data[4] = attitude.gyro_x_dps;
+        channel_data[5] = attitude.gyro_y_dps;
+        channel_data[6] = attitude.gyro_z_dps;
+        channel_data[7] = (float) flight_safety_get_state();
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_CASCADE)
+        imu_get_attitude(&attitude);
+        channel_data[4] = attitude.roll_deg;
+        channel_data[5] = attitude.pitch_deg;
+        channel_data[6] = attitude.gyro_x_dps;
+        channel_data[7] = attitude.gyro_y_dps;
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_ATTITUDE)
+        rc_command_get(&command);
+        imu_get_attitude(&attitude);
+        channel_data[4] = command.roll;
+        channel_data[5] = attitude.roll_deg;
+        channel_data[6] = command.pitch;
+        channel_data[7] = attitude.pitch_deg;
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_RC_YAW_RATE)
+        rc_command_get(&command);
+        imu_get_attitude(&attitude);
+        channel_data[4] = command.yaw;
+        channel_data[5] = attitude.gyro_z_dps;
+        channel_data[6] = (float) flight_safety_get_state();
+        channel_data[7] = imu_is_ready() ? 1.0f : 0.0f;
+#elif ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_FULL_CONTROL) || \
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL))
+        rc_command_get(&command);
+        channel_data[4] = command.roll;
+        channel_data[5] = command.pitch;
+        channel_data[6] = command.yaw;
+        channel_data[7] = (float) flight_safety_get_state();
+#else
+        rc_command_get(&command);
         channel_data[4] = command.throttle;
         channel_data[5] = command.arm_switch_high ? 1.0f : 0.0f;
+#endif
 #else
         /* 获取同一时刻的一组 CRSF 遥控数据。 */
         crsf_get_data(&rc_data);
@@ -164,10 +230,24 @@ void telemetry_thread_entry(void * pvParameters)
 #endif
 
 #if ((ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
-     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_IMU_CALIBRATION))
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_IMU_CALIBRATION) && \
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLIGHT_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_RATE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_CASCADE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_RC_ATTITUDE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_RC_YAW_RATE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_FULL_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_POWERED_CONTROL))
         channel_data[6] = (float) flight_safety_get_state();
 #endif
-#if (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED)
+#if ((ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLIGHT_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_RATE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_CASCADE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_RC_ATTITUDE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_RC_YAW_RATE) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_FULL_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_POWERED_CONTROL))
         channel_data[7] = imu_is_ready() ? 1.0f : 0.0f;
 #endif
 

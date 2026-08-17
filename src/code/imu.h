@@ -43,6 +43,9 @@ typedef struct
     float roll_deg;      /* 横滚角，单位：度。 */
     float pitch_deg;     /* 俯仰角，单位：度。 */
     float yaw_deg;       /* 航向角，单位：度。 */
+    float gyro_x_dps;    /* X 轴滤波角速度，单位：度每秒。 */
+    float gyro_y_dps;    /* Y 轴滤波角速度，单位：度每秒。 */
+    float gyro_z_dps;    /* Z 轴滤波角速度，单位：度每秒。 */
 } imu_attitude_t;
 
 /*
