@@ -88,6 +88,13 @@ static motor_channel_t g_motor_channels[MOTOR_OUTPUT_COUNT] =
 };
 
 static bool g_motor_output_ready = false;
+static volatile uint32_t g_motor_output_us[MOTOR_OUTPUT_COUNT] =
+{
+    MOTOR_OUTPUT_MIN_US,
+    MOTOR_OUTPUT_MIN_US,
+    MOTOR_OUTPUT_MIN_US,
+    MOTOR_OUTPUT_MIN_US
+};
 
 
 static fsp_err_t motor_timer_open(gpt_instance_ctrl_t * p_ctrl,
@@ -128,8 +135,16 @@ motor_output_status_t motor_output_init(void)
 {
     fsp_err_t err;
     uint32_t counts_per_us;
+    uint32_t motor_index;
 
     g_motor_output_ready = false;
+
+    for (motor_index = 0U;
+         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index++)
+    {
+        g_motor_output_us[motor_index] = MOTOR_OUTPUT_MIN_US;
+    }
 
     err = motor_timer_open(&g_motor_gpt5_ctrl,
                            &g_motor_gpt5_cfg,
@@ -222,9 +237,25 @@ motor_output_status_t motor_output_set_us(uint32_t motor_index,
                              duty_counts,
                              (uint32_t) g_motor_channels[motor_index].pin);
 
+    if (FSP_SUCCESS == err)
+    {
+        g_motor_output_us[motor_index] = pulse_us;
+    }
+
     return (FSP_SUCCESS == err) ?
            MOTOR_OUTPUT_STATUS_OK :
            MOTOR_OUTPUT_STATUS_FSP_ERROR;
+}
+
+
+uint32_t motor_output_get_us(uint32_t motor_index)
+{
+    if (motor_index >= MOTOR_OUTPUT_COUNT)
+    {
+        return 0U;
+    }
+
+    return g_motor_output_us[motor_index];
 }
 
 

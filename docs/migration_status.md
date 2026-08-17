@@ -18,6 +18,8 @@
 | ICM42688 CS | P710 | GPIO，低有效 |
 | CRSF RX / TX | P602 / P603 | SCI0，420000 baud |
 | 3DR 数传 RX / TX | P802 / P801 | SCI2，57600 baud |
+| Holybro GPS RX / TX | P715 / P714 | SCI4，115200 baud |
+| Holybro GPS compass SDA / SCL | P514 / P515 | IIC2 |
 | M1 / M2 | P700 / P701 | GPT5 A / B |
 | M3 | P109 | GPT10 A |
 | M4 | P702 | GPT6 A |
@@ -36,6 +38,9 @@
 - CH5 解锁：启动后必须先看到低档；CH3 低于 1050 us 且 CH5 高档保持
   1 秒才进入 ARMED。CH5 低、遥控失联或 IMU 更新失败立即停机。
 - 编译期保护的电调行程校准和 M1-M4 无桨顺序测试。
+- 无桨顺序测试必须由低油门下 CH5 低到高主动触发；CH5 低、油门抬高或
+  遥控失联都会立即恢复 1000 us。台架模式可通过 VOFA 观察四路命令、
+  当前阶段、活动电机和输出错误。
 
 ## 尚未完成
 

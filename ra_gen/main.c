@@ -13,6 +13,8 @@ extern void telemetry_thread_create(void);
 extern TaskHandle_t telemetry_thread;
 extern void rc_thread_create(void);
 extern TaskHandle_t rc_thread;
+extern void gps_thread_create(void);
+extern TaskHandle_t gps_thread;
 uint32_t g_fsp_common_thread_count;
 bool g_fsp_common_initialized;
 SemaphoreHandle_t g_fsp_common_initialized_semaphore;
@@ -115,6 +117,7 @@ int main(void)
     imu_thread_create ();
     telemetry_thread_create ();
     rc_thread_create ();
+    gps_thread_create ();
 
     /* Start the scheduler. */
     vTaskStartScheduler ();

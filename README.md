@@ -42,9 +42,12 @@ docs/           迁移、硬件、调试笔记
 - 四路 GPT PWM 输出与电机脉宽限幅。
 - CH5 解锁 / 停机安全逻辑。
 - 编译期保护的电调行程校准与 M1–M4 无桨顺序测试。
+- UP_T3-001 / UP-T301 光流 TOF 的 UPIXELS 协议驱动与 VOFA 测试遥测源。
 
 角度环、角速度环 PID 尚未接入电机输出（正常模式 ARMED 后四路仍保持
 1000 us）。详见 [docs/migration_status.md](docs/migration_status.md)。
+光流 TOF 的 FSP UART 配置和验收流程见
+[docs/up_tof_test_guide.md](docs/up_tof_test_guide.md)。
 
 ## 构建
 

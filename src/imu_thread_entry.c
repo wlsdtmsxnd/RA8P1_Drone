@@ -1,5 +1,6 @@
 #include "imu_thread.h"
 #include "code/esc_bench_test.h"
+#include "code/flight_control.h"
 #include "code/flight_safety.h"
 #include "code/imu.h"
 #include "code/project_config.h"
@@ -62,6 +63,7 @@ void imu_thread_entry(void * pvParameters)
     }
 
     flight_safety_init();
+    flight_control_init();
     last_wake_time = xTaskGetTickCount();
 
     while (1)
@@ -70,6 +72,7 @@ void imu_thread_entry(void * pvParameters)
 
         /* IMU 错误、遥控失联或未满足解锁条件都会强制 1000 us。 */
         flight_safety_update(IMU_STATUS_OK == imu_status);
+        flight_control_update(IMU_STATUS_OK == imu_status);
 
         /*
          * 绝对周期延时，减少任务执行时间引起的周期累计误差。

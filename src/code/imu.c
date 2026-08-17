@@ -228,7 +228,9 @@ static void imu_mahony_update(float gyro_x_rad_s,
 
 
 /* 四元数转换为正常定义的 Roll、Pitch、Yaw。 */
-static void imu_update_euler_angles(void)
+static void imu_update_euler_angles(float gyro_x_dps,
+                                    float gyro_y_dps,
+                                    float gyro_z_dps)
 {
     imu_attitude_t attitude;      /* 本次姿态结果。 */
     float pitch_sine;             /* Pitch 反正弦输入。 */
@@ -267,6 +269,10 @@ static void imu_update_euler_angles(void)
 
     attitude.yaw_deg = imu_wrap_angle_180(g_yaw_absolute_deg -
                                           g_yaw_reference_deg);
+
+    attitude.gyro_x_dps = gyro_x_dps;
+    attitude.gyro_y_dps = gyro_y_dps;
+    attitude.gyro_z_dps = gyro_z_dps;
 
     /*
      * 三个角度作为一组发布，避免串口任务读到不同周期的数据。
@@ -555,7 +561,9 @@ imu_status_t imu_update(void)
                       g_accel_lpf_y,
                       g_accel_lpf_z);
 
-    imu_update_euler_angles();
+    imu_update_euler_angles(gyro_x_rad_s * IMU_RAD_TO_DEG,
+                            gyro_y_rad_s * IMU_RAD_TO_DEG,
+                            gyro_z_rad_s * IMU_RAD_TO_DEG);
 
     return IMU_STATUS_OK;
 }
