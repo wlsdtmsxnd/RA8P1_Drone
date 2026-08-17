@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "../driver/icm42688.h"
+
 /* IMU 姿态算法状态。 */
 typedef enum
 {
@@ -49,6 +51,24 @@ typedef struct
 } imu_attitude_t;
 
 /*
+ * 原始采样异常捕获快照。current 每周期更新，其余字段在每次上电的
+ * 第一次异常时锁存，直到重新上电，防止关键现场被后续振铃覆盖。
+ */
+typedef struct
+{
+    icm42688_raw_data_t current;
+    icm42688_raw_data_t first;
+    icm42688_raw_data_t reread;
+    uint32_t capture_count;
+    uint32_t capture_tick;
+    uint32_t trigger_mask;
+    uint32_t reread_status;
+    uint32_t differing_byte_count;
+    bool used_reread;
+    bool valid;
+} imu_raw_diagnostic_t;
+
+/*
  * 初始化 ICM42688，并完成静止零偏标定。
  */
 imu_status_t imu_init(spi_instance_t const * p_spi_instance,
@@ -62,6 +82,9 @@ void imu_get_attitude(imu_attitude_t * p_attitude);
 
 /* 获取启动标定结果的一致快照。 */
 void imu_get_calibration(imu_calibration_t * p_calibration);
+
+/* 获取滤波前当前值以及锁存的首读/立即复读快照。 */
+void imu_get_raw_diagnostic(imu_raw_diagnostic_t * p_diagnostic);
 
 /* 查询 IMU 是否初始化完成。 */
 bool imu_is_ready(void);

@@ -1,6 +1,7 @@
 #include "icm42688.h"
 
 #include <limits.h>
+#include <string.h>
 
 /* ICM42688 User Bank 0 寄存器。 */
 #define ICM42688_REG_DEVICE_CONFIG          (0x11U)
@@ -422,6 +423,9 @@ icm42688_status_t icm42688_read_raw(icm42688_raw_data_t * p_raw_data)
 
     p_raw_data->gyro_z =
         (int16_t) (((uint16_t) raw_buffer[10] << 8U) | raw_buffer[11]);
+
+    /* 保留未解析的寄存器字节，供异常首读/复读诊断逐字节比较。 */
+    memcpy(p_raw_data->bytes, raw_buffer, sizeof(raw_buffer));
 
     /*
      * -32768 可能代表无效采样。

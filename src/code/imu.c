@@ -1,5 +1,6 @@
 #include "imu.h"
 #include "../driver/icm42688.h"
+#include "project_config.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -43,6 +44,14 @@
 #define IMU_BUTTER_B2                     (0.0461318f)
 #define IMU_BUTTER_A1                     (-1.3072850f)
 #define IMU_BUTTER_A2                     (0.4918122f)
+
+/*
+ * 原始采样守卫阈值。触发只要求立即复读；仅当复读恢复正常且字节不同，
+ * 才以复读替换首读。两次都异常时仍保留异常，让原安全保护正常生效。
+ */
+#define IMU_RAW_GUARD_GYRO_ABS_COUNTS       (1312) /* 80 dps。 */
+#define IMU_RAW_GUARD_GYRO_STEP_COUNTS      (820)  /* 50 dps/2 ms。 */
+#define IMU_RAW_GUARD_ACCEL_STEP_COUNTS     (2048) /* 0.5 g/2 ms。 */
 
 /* 二阶滤波器历史状态。 */
 typedef struct
@@ -90,8 +99,141 @@ static imu_attitude_t g_attitude = {0};
 /* 对外发布的启动标定状态和结果。 */
 static imu_calibration_t g_calibration = {0};
 
+/* 滤波前原始采样和异常复读锁存结果。 */
+static imu_raw_diagnostic_t g_raw_diagnostic = {0};
+
+static icm42688_raw_data_t g_previous_raw = {0};
+static bool g_previous_raw_valid = false;
+
 /* IMU 初始化完成标志。 */
 static bool g_imu_ready = false;
+
+
+static int32_t imu_abs_i32(int32_t value)
+{
+    return (value < 0) ? -value : value;
+}
+
+
+/* 返回触发来源位图：0..2 绝对角速度，3..5 角速度跳变，6..8 加速度跳变。 */
+static uint32_t imu_raw_guard_trigger(
+    icm42688_raw_data_t const * p_current)
+{
+    uint32_t mask = 0U;
+    int32_t gyro_x_corrected;
+    int32_t gyro_y_corrected;
+    int32_t gyro_z_corrected;
+
+    gyro_x_corrected = (int32_t) p_current->gyro_x -
+                       (int32_t) g_gyro_offset_x;
+    gyro_y_corrected = (int32_t) p_current->gyro_y -
+                       (int32_t) g_gyro_offset_y;
+    gyro_z_corrected = (int32_t) p_current->gyro_z -
+                       (int32_t) g_gyro_offset_z;
+
+    if (imu_abs_i32(gyro_x_corrected) > IMU_RAW_GUARD_GYRO_ABS_COUNTS) { mask |= (1UL << 0U); }
+    if (imu_abs_i32(gyro_y_corrected) > IMU_RAW_GUARD_GYRO_ABS_COUNTS) { mask |= (1UL << 1U); }
+    if (imu_abs_i32(gyro_z_corrected) > IMU_RAW_GUARD_GYRO_ABS_COUNTS) { mask |= (1UL << 2U); }
+
+    if (true == g_previous_raw_valid)
+    {
+        if (imu_abs_i32((int32_t) p_current->gyro_x - g_previous_raw.gyro_x) > IMU_RAW_GUARD_GYRO_STEP_COUNTS) { mask |= (1UL << 3U); }
+        if (imu_abs_i32((int32_t) p_current->gyro_y - g_previous_raw.gyro_y) > IMU_RAW_GUARD_GYRO_STEP_COUNTS) { mask |= (1UL << 4U); }
+        if (imu_abs_i32((int32_t) p_current->gyro_z - g_previous_raw.gyro_z) > IMU_RAW_GUARD_GYRO_STEP_COUNTS) { mask |= (1UL << 5U); }
+        if (imu_abs_i32((int32_t) p_current->accel_x - g_previous_raw.accel_x) > IMU_RAW_GUARD_ACCEL_STEP_COUNTS) { mask |= (1UL << 6U); }
+        if (imu_abs_i32((int32_t) p_current->accel_y - g_previous_raw.accel_y) > IMU_RAW_GUARD_ACCEL_STEP_COUNTS) { mask |= (1UL << 7U); }
+        if (imu_abs_i32((int32_t) p_current->accel_z - g_previous_raw.accel_z) > IMU_RAW_GUARD_ACCEL_STEP_COUNTS) { mask |= (1UL << 8U); }
+    }
+
+    return mask;
+}
+
+
+/* 读取一次；可证实为单事务异常时，用立即复读替换后再送入滤波器。 */
+static icm42688_status_t imu_read_guarded_raw(
+    icm42688_raw_data_t * p_accepted)
+{
+    icm42688_raw_data_t first;
+    icm42688_raw_data_t reread = {0};
+    icm42688_status_t first_status;
+    icm42688_status_t reread_status;
+    uint32_t trigger_mask;
+    uint32_t reread_trigger_mask = 0U;
+    uint32_t byte_index;
+    uint32_t differing_byte_count = 0U;
+    bool used_reread = false;
+
+    if (NULL == p_accepted)
+    {
+        return ICM42688_STATUS_ARGUMENT_ERROR;
+    }
+
+    first_status = icm42688_read_raw(&first);
+
+    if (ICM42688_STATUS_OK != first_status)
+    {
+        return first_status;
+    }
+
+    trigger_mask = imu_raw_guard_trigger(&first);
+
+    if (0U != trigger_mask)
+    {
+        /* 紧接首读发起第二个完整 12-byte SPI 事务，不等待下一控制周期。 */
+        reread_status = icm42688_read_raw(&reread);
+
+        if (ICM42688_STATUS_OK == reread_status)
+        {
+            for (byte_index = 0U;
+                 byte_index < ICM42688_RAW_BYTE_COUNT;
+                 byte_index++)
+            {
+                if (first.bytes[byte_index] != reread.bytes[byte_index])
+                {
+                    differing_byte_count++;
+                }
+            }
+
+            reread_trigger_mask = imu_raw_guard_trigger(&reread);
+
+            if ((0U != differing_byte_count) &&
+                (0U == reread_trigger_mask))
+            {
+                /* 复读回到上一有效样本附近，证实首读是单事务瞬态。 */
+                used_reread = true;
+            }
+        }
+
+#if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
+        if (false == g_raw_diagnostic.valid)
+        {
+        taskENTER_CRITICAL();
+        g_raw_diagnostic.first = first;
+        g_raw_diagnostic.reread = reread;
+        g_raw_diagnostic.capture_count++;
+        g_raw_diagnostic.capture_tick = (uint32_t) xTaskGetTickCount();
+        g_raw_diagnostic.trigger_mask = trigger_mask;
+        g_raw_diagnostic.reread_status = (uint32_t) reread_status;
+        g_raw_diagnostic.differing_byte_count = differing_byte_count;
+        g_raw_diagnostic.used_reread = used_reread;
+        g_raw_diagnostic.valid = true;
+        taskEXIT_CRITICAL();
+        }
+#endif
+    }
+
+    *p_accepted = used_reread ? reread : first;
+    g_previous_raw = *p_accepted;
+    g_previous_raw_valid = true;
+
+#if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
+    taskENTER_CRITICAL();
+    g_raw_diagnostic.current = *p_accepted;
+    taskEXIT_CRITICAL();
+#endif
+
+    return ICM42688_STATUS_OK;
+}
 
 
 /* 二阶巴特沃斯滤波。 */
@@ -314,6 +456,12 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
     g_yaw_reference_valid = false;
 
     taskENTER_CRITICAL();
+    g_raw_diagnostic = (imu_raw_diagnostic_t) {0};
+    taskEXIT_CRITICAL();
+    g_previous_raw = (icm42688_raw_data_t) {0};
+    g_previous_raw_valid = false;
+
+    taskENTER_CRITICAL();
     g_calibration = (imu_calibration_t) {0};
     taskEXIT_CRITICAL();
 
@@ -477,6 +625,10 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
     g_accel_lpf_z =
         -(float) raw_data.accel_z / ICM42688_ACCEL_LSB_PER_G;
 
+    /* 以标定结束后的静止样本作为原始守卫的连续性基准。 */
+    g_previous_raw = raw_data;
+    g_previous_raw_valid = true;
+
     g_imu_ready = true;
 
     return IMU_STATUS_OK;
@@ -500,7 +652,7 @@ imu_status_t imu_update(void)
         return IMU_STATUS_NOT_READY;
     }
 
-    driver_status = icm42688_read_raw(&raw_data);
+    driver_status = imu_read_guarded_raw(&raw_data);
 
     if (ICM42688_STATUS_OK != driver_status)
     {
@@ -600,6 +752,19 @@ void imu_get_calibration(imu_calibration_t * p_calibration)
 
     taskENTER_CRITICAL();
     *p_calibration = g_calibration;
+    taskEXIT_CRITICAL();
+}
+
+
+void imu_get_raw_diagnostic(imu_raw_diagnostic_t * p_diagnostic)
+{
+    if (NULL == p_diagnostic)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    *p_diagnostic = g_raw_diagnostic;
     taskEXIT_CRITICAL();
 }
 

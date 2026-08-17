@@ -16,7 +16,15 @@
 #define ICM42688_CS_PIN    BSP_IO_PORT_07_PIN_10
 
 /* ICM42688 由 5V_EXT 供电，等待外设电源和板载稳压稳定。 */
-#define ICM42688_POWER_STABLE_DELAY_MS    (100U)
+#define ICM42688_POWER_STABLE_DELAY_MS    (1000U)
+
+/*
+ * 主电源冷启动时，ESC 上电提示音会通过电机/桨叶传到 IMU。
+ * 只对“静止标定期间检测到运动”做有限次重试；SPI、设备 ID
+ * 或寄存器错误仍立即停机，不用重试掩盖硬件故障。
+ */
+#define IMU_CALIBRATION_MAX_ATTEMPTS      (3U)
+#define IMU_CALIBRATION_RETRY_DELAY_MS    (1000U)
 
 
 /* IMU 任务入口：固定 2 ms 周期运行姿态解算。 */
@@ -25,6 +33,7 @@ void imu_thread_entry(void * pvParameters)
     TickType_t last_wake_time;       /* 上一次周期唤醒时刻。 */
 #if (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED)
     imu_status_t imu_status;         /* IMU 初始化或更新状态。 */
+    uint32_t imu_calibration_attempt; /* 静止标定尝试次数。 */
 #endif
     motor_output_status_t motor_status;
 
@@ -51,8 +60,24 @@ void imu_thread_entry(void * pvParameters)
 #else
     vTaskDelay(pdMS_TO_TICKS(ICM42688_POWER_STABLE_DELAY_MS));
 
-    imu_status = imu_init(&g_spi_imu,
-                          ICM42688_CS_PIN);
+    imu_calibration_attempt = 0U;
+
+    do
+    {
+        imu_calibration_attempt++;
+        imu_status = imu_init(&g_spi_imu,
+                              ICM42688_CS_PIN);
+
+        if ((IMU_STATUS_CALIBRATION_MOTION == imu_status) &&
+            (imu_calibration_attempt < IMU_CALIBRATION_MAX_ATTEMPTS))
+        {
+            /* 重试等待期间始终保持四路 1000 us。 */
+            motor_output_all_stop();
+            vTaskDelay(pdMS_TO_TICKS(IMU_CALIBRATION_RETRY_DELAY_MS));
+        }
+    }
+    while ((IMU_STATUS_CALIBRATION_MOTION == imu_status) &&
+           (imu_calibration_attempt < IMU_CALIBRATION_MAX_ATTEMPTS));
 
     if (IMU_STATUS_OK != imu_status)
     {
@@ -78,7 +103,15 @@ void imu_thread_entry(void * pvParameters)
         /* IMU 错误、遥控失联或未满足解锁条件都会强制 1000 us。 */
         flight_safety_update(IMU_STATUS_OK == imu_status);
 
-#if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_STICK_MIXER)
+#if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
+        /* 诊断模式不运行任何控制器，并在每个 2 ms 周期重申安全输出。 */
+        motor_output_all_stop();
+#elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+        flight_control_update(IMU_STATUS_OK == imu_status);
+#elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
+        flight_control_prop_load_vibration_update(
+            IMU_STATUS_OK == imu_status);
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_STICK_MIXER)
         mixer_bench_test_update(IMU_STATUS_OK == imu_status);
 #elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_LEVEL)
         imu_feedback_bench_test_update(IMU_STATUS_OK == imu_status);
@@ -92,7 +125,8 @@ void imu_thread_entry(void * pvParameters)
         rc_yaw_rate_bench_test_update(IMU_STATUS_OK == imu_status);
 #elif ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_FULL_CONTROL) || \
        (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL) || \
-       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_SHADOW_CONTROL))
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_SHADOW_CONTROL) || \
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_PID_I_SHADOW))
         flight_control_update(IMU_STATUS_OK == imu_status);
 #endif
 

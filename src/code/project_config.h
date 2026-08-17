@@ -19,11 +19,46 @@
 #define CONTROL_BENCH_MODE_FULL_CONTROL  (7U)
 #define CONTROL_BENCH_MODE_POWERED_CONTROL (8U)
 #define CONTROL_BENCH_MODE_SHADOW_CONTROL (9U)
+#define CONTROL_BENCH_MODE_PID_I_SHADOW    (10U)
 
-/* 影子模式运行控制计算，但每个控制周期强制四路实际 PWM 为 1000 us。 */
-#define CONTROL_BENCH_MODE               CONTROL_BENCH_MODE_SHADOW_CONTROL
-#define CONTROL_BENCH_SAFETY_ACKNOWLEDGED (1U)
+/* 默认安全固件禁用控制台架模式，ARMED 时四路仍保持 1000 us。 */
+#define CONTROL_BENCH_MODE               CONTROL_BENCH_MODE_DISABLED
+#define CONTROL_BENCH_SAFETY_ACKNOWLEDGED (0U)
 #define CONTROL_BENCH_ESC_POWER_ACKNOWLEDGED (0U)
+
+#define PROP_LOAD_TEST_MODE_DISABLED       (0U)
+#define PROP_LOAD_TEST_MODE_VIBRATION_BASELINE (1U)
+
+/*
+ * 带桨动力测试使用独立安全门。默认固件必须保持 DISABLED 和全部 0U；
+ * 未完成专用固定工装、桨叶检查和 ESC 动力授权时禁止改为 1U。
+ */
+#define PROP_LOAD_TEST_MODE                PROP_LOAD_TEST_MODE_DISABLED
+#define PROP_LOAD_TEST_AIRFRAME_RESTRAINED_ACKNOWLEDGED (0U)
+#define PROP_LOAD_TEST_PROPELLERS_ACKNOWLEDGED (0U)
+#define PROP_LOAD_TEST_ESC_POWER_ACKNOWLEDGED (0U)
+
+#define TETHERED_FLIGHT_MODE_DISABLED           (0U)
+#define TETHERED_FLIGHT_MODE_FIRST_HOP          (1U)
+
+/*
+ * 首次系留离地使用独立安全门。默认安全固件必须保持 DISABLED 和全部 0U；
+ * 每次生成可驱动电机的专用固件前，都要重新确认系留、桨叶、隔离区和动力。
+ */
+#define TETHERED_FLIGHT_MODE                     TETHERED_FLIGHT_MODE_DISABLED
+#define TETHERED_FLIGHT_RESTRAINT_ACKNOWLEDGED   (0U)
+#define TETHERED_FLIGHT_PROPELLERS_ACKNOWLEDGED  (0U)
+#define TETHERED_FLIGHT_AREA_AND_KILL_ACKNOWLEDGED (0U)
+#define TETHERED_FLIGHT_ESC_POWER_ACKNOWLEDGED   (0U)
+
+#define IMU_DIAGNOSTIC_MODE_DISABLED             (0U)
+#define IMU_DIAGNOSTIC_MODE_RAW_REREAD            (1U)
+
+/*
+ * 原始采样异常捕获模式不运行电机控制，每个 IMU 周期强制四路 1000 us。
+ * 它只记录首读、立即复读和原始 SPI 字节，不需要接通 ESC 动力。
+ */
+#define IMU_DIAGNOSTIC_MODE                       IMU_DIAGNOSTIC_MODE_RAW_REREAD
 
 #define TELEMETRY_SOURCE_CRSF            (0U)
 #define TELEMETRY_SOURCE_EULER           (1U)
@@ -33,7 +68,7 @@
 #define TELEMETRY_SOURCE_FLOW_TOF        (5U)
 #define TELEMETRY_SOURCE_MOTOR_OUTPUT    (6U)
 #define TELEMETRY_SOURCE_FLIGHT_CONTROL  (7U)
-#define TELEMETRY_SOURCE                 TELEMETRY_SOURCE_FLIGHT_CONTROL
+#define TELEMETRY_SOURCE                 TELEMETRY_SOURCE_RC_COMMAND
 
 #if ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) && \
      (ESC_BENCH_MODE != ESC_BENCH_MODE_CALIBRATION) && \
@@ -55,7 +90,8 @@
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_RC_YAW_RATE) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_FULL_CONTROL) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_POWERED_CONTROL) && \
-     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_SHADOW_CONTROL))
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_SHADOW_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_PID_I_SHADOW))
 #error "Invalid CONTROL_BENCH_MODE"
 #endif
 
@@ -77,6 +113,92 @@
 #if ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_DISABLED))
 #error "ESC bench mode and control bench mode are mutually exclusive"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) && \
+     (PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_VIBRATION_BASELINE))
+#error "Invalid PROP_LOAD_TEST_MODE"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) && \
+     (PROP_LOAD_TEST_AIRFRAME_RESTRAINED_ACKNOWLEDGED != 1U))
+#error "A rated prop-load restraint is required before prop-load testing"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) && \
+     (PROP_LOAD_TEST_PROPELLERS_ACKNOWLEDGED != 1U))
+#error "Propeller type, position, direction and fastening must be acknowledged"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) && \
+     (PROP_LOAD_TEST_ESC_POWER_ACKNOWLEDGED != 1U))
+#error "Explicit ESC power approval is required before prop-load testing"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_DISABLED) && \
+     ((PROP_LOAD_TEST_AIRFRAME_RESTRAINED_ACKNOWLEDGED != 0U) || \
+      (PROP_LOAD_TEST_PROPELLERS_ACKNOWLEDGED != 0U) || \
+      (PROP_LOAD_TEST_ESC_POWER_ACKNOWLEDGED != 0U)))
+#error "All prop-load acknowledgements must be 0U when the mode is disabled"
+#endif
+
+#if ((PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) && \
+     ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) || \
+      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_DISABLED)))
+#error "Prop-load, ESC bench and control bench modes are mutually exclusive"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     (TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_FIRST_HOP))
+#error "Invalid TETHERED_FLIGHT_MODE"
+#endif
+
+#if ((IMU_DIAGNOSTIC_MODE != IMU_DIAGNOSTIC_MODE_DISABLED) && \
+     (IMU_DIAGNOSTIC_MODE != IMU_DIAGNOSTIC_MODE_RAW_REREAD))
+#error "Invalid IMU_DIAGNOSTIC_MODE"
+#endif
+
+#if ((IMU_DIAGNOSTIC_MODE != IMU_DIAGNOSTIC_MODE_DISABLED) && \
+     ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) || \
+      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_DISABLED) || \
+      (PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED) || \
+      (TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED)))
+#error "IMU diagnostic mode and all motor-control test modes are mutually exclusive"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     (TETHERED_FLIGHT_RESTRAINT_ACKNOWLEDGED != 1U))
+#error "A rated central tether and fixed anchor are required"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     (TETHERED_FLIGHT_PROPELLERS_ACKNOWLEDGED != 1U))
+#error "Propeller type, position, direction and fastening must be acknowledged"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     (TETHERED_FLIGHT_AREA_AND_KILL_ACKNOWLEDGED != 1U))
+#error "A cleared area, pilot kill switch and separate power-cut operator are required"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     (TETHERED_FLIGHT_ESC_POWER_ACKNOWLEDGED != 1U))
+#error "Explicit ESC power approval is required for tethered flight"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_DISABLED) && \
+     ((TETHERED_FLIGHT_RESTRAINT_ACKNOWLEDGED != 0U) || \
+      (TETHERED_FLIGHT_PROPELLERS_ACKNOWLEDGED != 0U) || \
+      (TETHERED_FLIGHT_AREA_AND_KILL_ACKNOWLEDGED != 0U) || \
+      (TETHERED_FLIGHT_ESC_POWER_ACKNOWLEDGED != 0U)))
+#error "All tethered-flight acknowledgements must be 0U when disabled"
+#endif
+
+#if ((TETHERED_FLIGHT_MODE != TETHERED_FLIGHT_MODE_DISABLED) && \
+     ((ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED) || \
+      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_DISABLED) || \
+      (PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_DISABLED)))
+#error "Tethered flight and all bench/prop-load modes are mutually exclusive"
 #endif
 
 #if ((TELEMETRY_SOURCE != TELEMETRY_SOURCE_CRSF) && \

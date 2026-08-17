@@ -19,6 +19,9 @@
 /* ICM42688-P 的 WHO_AM_I 值。 */
 #define ICM42688_WHO_AM_I_VALUE        (0x47U)
 
+/* 一次六轴突发读取包含 12 个连续寄存器字节。 */
+#define ICM42688_RAW_BYTE_COUNT        (12U)
+
 /* ICM42688 驱动返回状态。 */
 typedef enum
 {
@@ -41,6 +44,7 @@ typedef struct
     int16_t gyro_x;     /* X 轴角速度原始值。 */
     int16_t gyro_y;     /* Y 轴角速度原始值。 */
     int16_t gyro_z;     /* Z 轴角速度原始值。 */
+    uint8_t bytes[ICM42688_RAW_BYTE_COUNT]; /* SPI 返回的原始寄存器字节。 */
 } icm42688_raw_data_t;
 
 /*
