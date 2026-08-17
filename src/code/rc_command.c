@@ -143,7 +143,8 @@ void rc_command_get(rc_command_t * p_command)
         RC_ROLL_CENTER_US,
         RC_ROLL_MAX_US);
 
-    p_command->pitch = rc_normalize_centered(
+    /* FRD 约定：后拉杆命令机头抬起，因此 Pitch 指令为正。 */
+    p_command->pitch = -rc_normalize_centered(
         rc_data.channel_us[RC_PITCH_CHANNEL_INDEX],
         RC_PITCH_MIN_US,
         RC_PITCH_CENTER_US,
