@@ -1,7 +1,7 @@
 #include "flight_safety.h"
 
 #include "imu.h"
-#include "../driver/crsf.h"
+#include "rc_command.h"
 #include "../driver/motor_output.h"
 
 #include "FreeRTOS.h"
@@ -9,11 +9,6 @@
 
 #include <stdint.h>
 
-#define RC_THROTTLE_CHANNEL_INDEX     (2U)
-#define RC_ARM_CHANNEL_INDEX          (4U)
-#define RC_THROTTLE_LOW_MAX_US        (1050U)
-#define RC_ARM_LOW_MAX_US             (1300U)
-#define RC_ARM_HIGH_MIN_US            (1700U)
 #define RC_ARM_HOLD_TIME_TICKS        pdMS_TO_TICKS(1000U)
 
 volatile flight_safety_state_t g_flight_safety_state =
@@ -40,25 +35,20 @@ void flight_safety_init(void)
 
 void flight_safety_update(bool imu_healthy)
 {
-    crsf_data_t rc_data;
-    uint16_t throttle_us;
-    uint16_t arm_us;
+    rc_command_t command;
     TickType_t now;
 
-    crsf_get_data(&rc_data);
+    rc_command_get(&command);
 
     if ((false == imu_healthy) ||
-        (false == rc_data.connected))
+        (false == command.connected))
     {
         g_seen_arm_switch_low = false;
         flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
         return;
     }
 
-    throttle_us = rc_data.channel_us[RC_THROTTLE_CHANNEL_INDEX];
-    arm_us = rc_data.channel_us[RC_ARM_CHANNEL_INDEX];
-
-    if (arm_us <= RC_ARM_LOW_MAX_US)
+    if (true == command.arm_switch_low)
     {
         g_seen_arm_switch_low = true;
         flight_safety_stop(FLIGHT_SAFETY_DISARMED);
@@ -67,7 +57,7 @@ void flight_safety_update(bool imu_healthy)
 
     if (FLIGHT_SAFETY_ARMED == g_flight_safety_state)
     {
-        if (arm_us < RC_ARM_HIGH_MIN_US)
+        if (false == command.arm_switch_high)
         {
             flight_safety_stop(FLIGHT_SAFETY_DISARMED);
         }
@@ -81,8 +71,8 @@ void flight_safety_update(bool imu_healthy)
         return;
     }
 
-    if ((arm_us >= RC_ARM_HIGH_MIN_US) &&
-        (throttle_us <= RC_THROTTLE_LOW_MAX_US))
+    if ((true == command.arm_switch_high) &&
+        (true == command.throttle_low))
     {
         now = xTaskGetTickCount();
 

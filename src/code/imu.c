@@ -4,6 +4,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include <limits.h>
 #include <math.h>
 
 /* 姿态算法周期：2 ms，即 500 Hz。 */
@@ -22,12 +23,16 @@
 #define IMU_MAHONY_KI                     (0.004f)
 
 /* 陀螺仪静止零偏标定参数。 */
-#define IMU_CALIBRATION_SAMPLES           (1000U)
+#define IMU_CALIBRATION_SETTLE_MS          (1000U)
+#define IMU_CALIBRATION_SAMPLES            (2000U)
 #define IMU_CALIBRATION_DELAY_MS          (2U)
+#define IMU_CALIBRATION_GYRO_SPAN_COUNTS  (100)
+#define IMU_CALIBRATION_ACCEL_NORM_MIN    (0.64f)
+#define IMU_CALIBRATION_ACCEL_NORM_MAX    (1.44f)
 
-/* RT1064 同一机架实测的水平安装零偏，后续需在 RA8P1 上复测。 */
-#define IMU_LEVEL_ROLL_TRIM_DEG           (0.0390f)
-#define IMU_LEVEL_PITCH_TRIM_DEG          (2.15465f)
+/* 拆装 IMU 后先保持为 0，根据本次水平静置结果重新填写。 */
+#define IMU_LEVEL_ROLL_TRIM_DEG           (0.0f)
+#define IMU_LEVEL_PITCH_TRIM_DEG          (-0.97f)
 
 /*
  * 二阶巴特沃斯：
@@ -81,6 +86,9 @@ static float g_integral_z = 0.0f;
 
 /* 对外发布的姿态。 */
 static imu_attitude_t g_attitude = {0};
+
+/* 对外发布的启动标定状态和结果。 */
+static imu_calibration_t g_calibration = {0};
 
 /* IMU 初始化完成标志。 */
 static bool g_imu_ready = false;
@@ -277,6 +285,21 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
     int64_t gyro_sum_x = 0;                 /* X 轴累计值。 */
     int64_t gyro_sum_y = 0;                 /* Y 轴累计值。 */
     int64_t gyro_sum_z = 0;                 /* Z 轴累计值。 */
+    int16_t gyro_min_x = INT16_MAX;          /* X 轴标定最小值。 */
+    int16_t gyro_min_y = INT16_MAX;          /* Y 轴标定最小值。 */
+    int16_t gyro_min_z = INT16_MAX;          /* Z 轴标定最小值。 */
+    int16_t gyro_max_x = INT16_MIN;          /* X 轴标定最大值。 */
+    int16_t gyro_max_y = INT16_MIN;          /* Y 轴标定最大值。 */
+    int16_t gyro_max_z = INT16_MIN;          /* Z 轴标定最大值。 */
+    int32_t gyro_span_x;                     /* X 轴标定波动范围。 */
+    int32_t gyro_span_y;                     /* Y 轴标定波动范围。 */
+    int32_t gyro_span_z;                     /* Z 轴标定波动范围。 */
+    int32_t gyro_span_max;                   /* 三轴最大波动范围。 */
+    float accel_x_g;                         /* 标定期间 X 轴加速度。 */
+    float accel_y_g;                         /* 标定期间 Y 轴加速度。 */
+    float accel_z_g;                         /* 标定期间 Z 轴加速度。 */
+    float accel_norm_squared;                /* 加速度模长平方。 */
+    bool calibration_motion = false;         /* 标定期间移动标志。 */
     icm42688_raw_data_t raw_data;           /* 六轴原始数据。 */
     icm42688_status_t driver_status;        /* 底层驱动状态。 */
 
@@ -284,18 +307,31 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
     g_yaw_reference_deg = 0.0f;
     g_yaw_reference_valid = false;
 
+    taskENTER_CRITICAL();
+    g_calibration = (imu_calibration_t) {0};
+    taskEXIT_CRITICAL();
+
     driver_status = icm42688_init(p_spi_instance,
                                   chip_select_pin);
 
     if (ICM42688_STATUS_OK != driver_status)
     {
+        taskENTER_CRITICAL();
+        g_calibration.state = IMU_CALIBRATION_DRIVER_ERROR;
+        taskEXIT_CRITICAL();
         return IMU_STATUS_DRIVER_ERROR;
     }
 
     /*
-     * 标定期间飞控板必须静止。
-     * 1000 个样本 × 2 ms，约 2 秒。
+     * 先等待传感器和机架稳定，再进行约 4 秒静止采样。
+     * 标定期间飞控板必须水平放稳，不能触碰。
      */
+    taskENTER_CRITICAL();
+    g_calibration.state = IMU_CALIBRATION_IN_PROGRESS;
+    taskEXIT_CRITICAL();
+
+    vTaskDelay(pdMS_TO_TICKS(IMU_CALIBRATION_SETTLE_MS));
+
     for (sample_index = 0U;
          sample_index < IMU_CALIBRATION_SAMPLES;
          sample_index++)
@@ -304,12 +340,63 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
 
         if (ICM42688_STATUS_OK != driver_status)
         {
+            taskENTER_CRITICAL();
+            g_calibration.state = IMU_CALIBRATION_DRIVER_ERROR;
+            taskEXIT_CRITICAL();
             return IMU_STATUS_DRIVER_ERROR;
         }
 
         gyro_sum_x += raw_data.gyro_x;
         gyro_sum_y += raw_data.gyro_y;
         gyro_sum_z += raw_data.gyro_z;
+
+        if (raw_data.gyro_x < gyro_min_x)
+        {
+            gyro_min_x = raw_data.gyro_x;
+        }
+        if (raw_data.gyro_x > gyro_max_x)
+        {
+            gyro_max_x = raw_data.gyro_x;
+        }
+        if (raw_data.gyro_y < gyro_min_y)
+        {
+            gyro_min_y = raw_data.gyro_y;
+        }
+        if (raw_data.gyro_y > gyro_max_y)
+        {
+            gyro_max_y = raw_data.gyro_y;
+        }
+        if (raw_data.gyro_z < gyro_min_z)
+        {
+            gyro_min_z = raw_data.gyro_z;
+        }
+        if (raw_data.gyro_z > gyro_max_z)
+        {
+            gyro_max_z = raw_data.gyro_z;
+        }
+
+        accel_x_g = (float) raw_data.accel_x /
+                    ICM42688_ACCEL_LSB_PER_G;
+        accel_y_g = (float) raw_data.accel_y /
+                    ICM42688_ACCEL_LSB_PER_G;
+        accel_z_g = (float) raw_data.accel_z /
+                    ICM42688_ACCEL_LSB_PER_G;
+        accel_norm_squared = (accel_x_g * accel_x_g) +
+                             (accel_y_g * accel_y_g) +
+                             (accel_z_g * accel_z_g);
+
+        if ((accel_norm_squared < IMU_CALIBRATION_ACCEL_NORM_MIN) ||
+            (accel_norm_squared > IMU_CALIBRATION_ACCEL_NORM_MAX))
+        {
+            calibration_motion = true;
+        }
+
+        if (0U == ((sample_index + 1U) % 50U))
+        {
+            taskENTER_CRITICAL();
+            g_calibration.sample_count = sample_index + 1U;
+            taskEXIT_CRITICAL();
+        }
 
         vTaskDelay(pdMS_TO_TICKS(IMU_CALIBRATION_DELAY_MS));
     }
@@ -323,6 +410,45 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
     g_gyro_offset_z =
         (float) gyro_sum_z / (float) IMU_CALIBRATION_SAMPLES;
 
+    gyro_span_x = (int32_t) gyro_max_x - (int32_t) gyro_min_x;
+    gyro_span_y = (int32_t) gyro_max_y - (int32_t) gyro_min_y;
+    gyro_span_z = (int32_t) gyro_max_z - (int32_t) gyro_min_z;
+    gyro_span_max = gyro_span_x;
+
+    if (gyro_span_y > gyro_span_max)
+    {
+        gyro_span_max = gyro_span_y;
+    }
+    if (gyro_span_z > gyro_span_max)
+    {
+        gyro_span_max = gyro_span_z;
+    }
+
+    if (gyro_span_max > IMU_CALIBRATION_GYRO_SPAN_COUNTS)
+    {
+        calibration_motion = true;
+    }
+
+    taskENTER_CRITICAL();
+    g_calibration.gyro_offset_x_dps =
+        g_gyro_offset_x / ICM42688_GYRO_LSB_PER_DPS;
+    g_calibration.gyro_offset_y_dps =
+        g_gyro_offset_y / ICM42688_GYRO_LSB_PER_DPS;
+    g_calibration.gyro_offset_z_dps =
+        g_gyro_offset_z / ICM42688_GYRO_LSB_PER_DPS;
+    g_calibration.gyro_span_max_dps =
+        (float) gyro_span_max / ICM42688_GYRO_LSB_PER_DPS;
+    g_calibration.sample_count = IMU_CALIBRATION_SAMPLES;
+    g_calibration.state = calibration_motion ?
+                          IMU_CALIBRATION_MOTION :
+                          IMU_CALIBRATION_SUCCESS;
+    taskEXIT_CRITICAL();
+
+    if (true == calibration_motion)
+    {
+        return IMU_STATUS_CALIBRATION_MOTION;
+    }
+
     /*
      * 用一次静止加速度作为低通初值，避免启动时从 0 缓慢收敛。
      */
@@ -330,6 +456,9 @@ imu_status_t imu_init(spi_instance_t const * p_spi_instance,
 
     if (ICM42688_STATUS_OK != driver_status)
     {
+        taskENTER_CRITICAL();
+        g_calibration.state = IMU_CALIBRATION_DRIVER_ERROR;
+        taskEXIT_CRITICAL();
         return IMU_STATUS_DRIVER_ERROR;
     }
 
@@ -450,6 +579,20 @@ void imu_get_attitude(imu_attitude_t * p_attitude)
 bool imu_is_ready(void)
 {
     return g_imu_ready;
+}
+
+
+/* 获取启动标定结果快照。 */
+void imu_get_calibration(imu_calibration_t * p_calibration)
+{
+    if (NULL == p_calibration)
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    *p_calibration = g_calibration;
+    taskEXIT_CRITICAL();
 }
 
 

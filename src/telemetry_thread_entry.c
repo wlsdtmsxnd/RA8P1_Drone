@@ -3,6 +3,7 @@
 #include "code/flight_safety.h"
 #include "code/imu.h"
 #include "code/project_config.h"
+#include "code/rc_command.h"
 #include "driver/radio_3dr.h"
 #include "driver/crsf.h"
 
@@ -29,8 +30,14 @@ void telemetry_thread_entry(void * pvParameters)
 {
     TickType_t last_wake_time;                         /* 遥测任务周期基准。 */
     radio_3dr_status_t radio_status;                   /* 3DR 数传操作状态。 */
-#if (TELEMETRY_SOURCE == TELEMETRY_SOURCE_EULER)
+#if ((TELEMETRY_SOURCE == TELEMETRY_SOURCE_EULER) || \
+     (TELEMETRY_SOURCE == TELEMETRY_SOURCE_IMU_CALIBRATION))
     imu_attitude_t attitude;                           /* IMU 姿态快照。 */
+#if (TELEMETRY_SOURCE == TELEMETRY_SOURCE_IMU_CALIBRATION)
+    imu_calibration_t calibration;                     /* IMU 标定结果。 */
+#endif
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_RC_COMMAND)
+    rc_command_t command;                              /* 归一化遥控指令。 */
 #else
     crsf_data_t rc_data;                               /* CRSF 遥控数据快照。 */
 #endif
@@ -61,11 +68,29 @@ void telemetry_thread_entry(void * pvParameters)
             channel_data[channel_index] = 0.0f;
         }
 
-#if (TELEMETRY_SOURCE == TELEMETRY_SOURCE_EULER)
+#if (TELEMETRY_SOURCE == TELEMETRY_SOURCE_IMU_CALIBRATION)
+        imu_get_calibration(&calibration);
+        imu_get_attitude(&attitude);
+        channel_data[0] = calibration.gyro_offset_x_dps;
+        channel_data[1] = calibration.gyro_offset_y_dps;
+        channel_data[2] = calibration.gyro_offset_z_dps;
+        channel_data[3] = attitude.roll_deg;
+        channel_data[4] = attitude.pitch_deg;
+        channel_data[5] = attitude.yaw_deg;
+        channel_data[6] = (float) calibration.state;
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_EULER)
         imu_get_attitude(&attitude);
         channel_data[0] = attitude.roll_deg;
         channel_data[1] = attitude.pitch_deg;
         channel_data[2] = attitude.yaw_deg;
+#elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_RC_COMMAND)
+        rc_command_get(&command);
+        channel_data[0] = command.roll;
+        channel_data[1] = command.pitch;
+        channel_data[2] = command.throttle;
+        channel_data[3] = command.yaw;
+        channel_data[4] = command.arm_switch_high ? 1.0f : 0.0f;
+        channel_data[5] = (float) command.mode;
 #else
         /* 获取同一时刻的一组 CRSF 遥控数据。 */
         crsf_get_data(&rc_data);
@@ -82,10 +107,12 @@ void telemetry_thread_entry(void * pvParameters)
         }
 #endif
 
+#if (TELEMETRY_SOURCE != TELEMETRY_SOURCE_IMU_CALIBRATION)
         channel_data[6] = (float) flight_safety_get_state();
+#endif
         channel_data[7] = imu_is_ready() ? 1.0f : 0.0f;
 
-        /* I0-I5 为所选数据，I6 为安全状态，I7 为 IMU 就绪。 */
+        /* 标定模式的 I6 为标定状态，其余模式的 I6 为安全状态。 */
         memcpy(frame_buffer, channel_data, sizeof(channel_data));
         memcpy(&frame_buffer[sizeof(channel_data)], &frame_tail, sizeof(frame_tail));
 

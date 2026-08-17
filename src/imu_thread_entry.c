@@ -8,6 +8,9 @@
 /* ICM42688 软件片选引脚：P710。 */
 #define ICM42688_CS_PIN    BSP_IO_PORT_07_PIN_10
 
+/* ICM42688 由 5V_EXT 供电，等待外设电源和板载稳压稳定。 */
+#define ICM42688_POWER_STABLE_DELAY_MS    (100U)
+
 
 /* IMU 任务入口：固定 2 ms 周期运行姿态解算。 */
 void imu_thread_entry(void * pvParameters)
@@ -39,6 +42,8 @@ void imu_thread_entry(void * pvParameters)
                         pdMS_TO_TICKS(2U));
     }
 #else
+    vTaskDelay(pdMS_TO_TICKS(ICM42688_POWER_STABLE_DELAY_MS));
+
     imu_status = imu_init(&g_spi_imu,
                           ICM42688_CS_PIN);
 
