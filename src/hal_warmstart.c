@@ -6,6 +6,8 @@
 
 #include "hal_data.h"
 
+#define EXT_5V_ENABLE_PIN    BSP_IO_PORT_02_PIN_06
+
 FSP_CPP_HEADER
 void R_BSP_WarmStart(bsp_warm_start_event_t event);
 
@@ -41,10 +43,28 @@ void R_BSP_WarmStart (bsp_warm_start_event_t event)
 
     if (BSP_WARM_START_POST_C == event)
     {
+        fsp_err_t err;
+
         /* C runtime environment and system clocks are setup. */
 
         /* Configure pins. */
-        R_IOPORT_Open(&IOPORT_CFG_CTRL, &IOPORT_CFG_NAME);
+        err = R_IOPORT_Open(&IOPORT_CFG_CTRL, &IOPORT_CFG_NAME);
+
+        if (FSP_SUCCESS != err)
+        {
+            BSP_CFG_HANDLE_UNRECOVERABLE_ERROR(0);
+        }
+
+        /* Enable the expansion-board 5V_EXT rail before application peripherals start. */
+        err = R_IOPORT_PinCfg(&IOPORT_CFG_CTRL,
+                              EXT_5V_ENABLE_PIN,
+                              ((uint32_t) IOPORT_CFG_PORT_DIRECTION_OUTPUT |
+                               (uint32_t) IOPORT_CFG_PORT_OUTPUT_HIGH));
+
+        if (FSP_SUCCESS != err)
+        {
+            BSP_CFG_HANDLE_UNRECOVERABLE_ERROR(0);
+        }
 
 #if BSP_CFG_SDRAM_ENABLED
 
