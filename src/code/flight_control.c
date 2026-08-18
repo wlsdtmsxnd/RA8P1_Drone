@@ -192,8 +192,8 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_TEST_RATE_IMMEDIATE_DPS        (300.0f)
 #define TETHERED_RATE_CONFIRM_UPDATES          (10U) /* 500 Hz 下 20 ms。 */
 #define TETHERED_RATE_IMMEDIATE_UPDATES        (2U)  /* 500 Hz 下 4 ms。 */
-#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (3.0f)
-#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (3.0f)
+#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (1.0f)
+#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (1.0f)
 #define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.30f)
 #define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.40f)
 #define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.20f)
