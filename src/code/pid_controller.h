@@ -10,7 +10,7 @@ typedef struct st_pid_controller
     float kd;
     float integrator;
     float integrator_limit;
-    float output_limit;
+    float output_limit; /* 大于0时启用；0表示不限制总输出。 */
     float previous_measurement;
     float derivative_state;
     float derivative_alpha;

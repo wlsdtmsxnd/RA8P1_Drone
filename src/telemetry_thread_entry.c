@@ -34,8 +34,8 @@
 /* 20 Hz、51 通道：原始首读/复读、是否替换以及滤波后三轴。 */
 #define TELEMETRY_CHANNEL_COUNT      (51U)
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-/* 系留短跳以 50 Hz 发送精简的 15 通道关键数据。 */
-#define TELEMETRY_CHANNEL_COUNT      (15U)
+/* 系留短跳以 50 Hz 发送 25 通道控制、指令、姿态与Yaw积分诊断数据。 */
+#define TELEMETRY_CHANNEL_COUNT      (25U)
 #else
 /* 普通模式使用 8 个数据通道。 */
 #define TELEMETRY_CHANNEL_COUNT      (8U)
@@ -65,7 +65,6 @@ void telemetry_thread_entry(void * pvParameters)
     imu_attitude_t attitude;                           /* 系留姿态与角速度快照。 */
     flight_control_status_t control_status;            /* 系留控制器状态。 */
     rc_command_t command;                              /* 系留遥控指令。 */
-    imu_raw_diagnostic_t raw_diagnostic;               /* 原始守卫累计状态。 */
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
     imu_attitude_t attitude;                           /* 桨载滤波角速度快照。 */
 #else
@@ -122,10 +121,15 @@ void telemetry_thread_entry(void * pvParameters)
 
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_POWER_STABLE_DELAY_MS));
 
+    /* 光流 TOF 只做被动采集；初始化失败不影响数传与飞行控制。 */
+    (void) up_tof_init(&g_uart_flow_tof);
+
     last_wake_time = xTaskGetTickCount();
 
     while (1)
     {
+        up_tof_process();
+
         for (channel_index = 0U;
              channel_index < TELEMETRY_CHANNEL_COUNT;
              channel_index++)
@@ -203,20 +207,29 @@ void telemetry_thread_entry(void * pvParameters)
         imu_get_attitude(&attitude);
         flight_control_get_status(&control_status);
         rc_command_get(&command);
-        imu_get_raw_diagnostic(&raw_diagnostic);
         channel_data[4] = command.throttle;
-        channel_data[5] = attitude.roll_deg;
-        channel_data[6] = attitude.pitch_deg;
-        channel_data[7] = command.roll;
-        channel_data[8] = fmaxf(fabsf(attitude.gyro_x_dps),
-                                fmaxf(fabsf(attitude.gyro_y_dps),
-                                      fabsf(attitude.gyro_z_dps)));
+        channel_data[5] = attitude.gyro_x_dps;
+        channel_data[6] = attitude.gyro_y_dps;
+        channel_data[7] = command.yaw;
+        channel_data[8] = attitude.gyro_z_dps;
         channel_data[9] = (float) flight_safety_get_state();
         channel_data[10] = (float) control_status.fault_reason;
-        channel_data[11] = (float) raw_diagnostic.replacement_count;
-        channel_data[12] = (float) raw_diagnostic.reread_failure_count;
+        channel_data[11] = control_status.yaw_target_rate_dps;
+        channel_data[12] = control_status.roll_correction_us;
         channel_data[13] = control_status.valid ? 1.0f : 0.0f;
         channel_data[14] = (float) flight_safety_get_stop_reason();
+        channel_data[15] = control_status.pitch_correction_us;
+        channel_data[16] = control_status.yaw_correction_us;
+        channel_data[17] = command.roll;
+        channel_data[18] = command.pitch;
+        channel_data[19] = attitude.pitch_deg;
+        channel_data[20] = attitude.roll_deg;
+        channel_data[21] = control_status.base_us;
+        channel_data[22] = command.throttle_low ? 1.0f : 0.0f;
+        /* 无磁力计下仅用于单次短跳内观察累计转角，不作为航向闭环依据。 */
+        channel_data[23] = attitude.yaw_deg;
+        /* 小积分试飞必须记录积分本体，确认限幅和低油门复位均生效。 */
+        channel_data[24] = control_status.yaw_integrator_us;
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
         for (channel_index = 0U;
              channel_index < MOTOR_OUTPUT_COUNT;

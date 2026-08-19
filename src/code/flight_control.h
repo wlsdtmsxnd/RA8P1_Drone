@@ -21,6 +21,7 @@ typedef struct st_flight_control_status
 {
     float motor_us[FLIGHT_CONTROL_MOTOR_COUNT];
     float base_us;
+    float yaw_target_rate_dps;
     float roll_correction_us;
     float pitch_correction_us;
     float yaw_correction_us;

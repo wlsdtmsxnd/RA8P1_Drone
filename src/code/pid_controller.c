@@ -80,8 +80,7 @@ float pid_controller_update(pid_controller_t * p_controller,
         (dt_s <= 0.0f) ||
         (0 == isfinite(dt_s)) ||
         (0 == isfinite(setpoint)) ||
-        (0 == isfinite(measurement)) ||
-        (p_controller->output_limit <= 0.0f))
+        (0 == isfinite(measurement)))
     {
         pid_controller_reset(p_controller);
         return 0.0f;
@@ -113,12 +112,20 @@ float pid_controller_update(pid_controller_t * p_controller,
         (p_controller->kp * error) + candidate_integrator -
         (p_controller->kd * p_controller->derivative_state);
 
-    integrate = ((unconstrained_output <= p_controller->output_limit) &&
-                 (unconstrained_output >= -p_controller->output_limit)) ||
-                ((unconstrained_output > p_controller->output_limit) &&
-                 (error < 0.0f)) ||
-                ((unconstrained_output < -p_controller->output_limit) &&
-                 (error > 0.0f));
+    if (p_controller->output_limit > 0.0f)
+    {
+        integrate = ((unconstrained_output <= p_controller->output_limit) &&
+                     (unconstrained_output >= -p_controller->output_limit)) ||
+                    ((unconstrained_output > p_controller->output_limit) &&
+                     (error < 0.0f)) ||
+                    ((unconstrained_output < -p_controller->output_limit) &&
+                     (error > 0.0f));
+    }
+    else
+    {
+        /* output_limit == 0：与RA6M5一致，不限制P+I+D总输出。 */
+        integrate = true;
+    }
 
     if (true == integrate)
     {
@@ -128,7 +135,12 @@ float pid_controller_update(pid_controller_t * p_controller,
     output = (p_controller->kp * error) + p_controller->integrator -
              (p_controller->kd * p_controller->derivative_state);
 
-    return pid_controller_clampf(output,
-                                 -p_controller->output_limit,
-                                 p_controller->output_limit);
+    if (p_controller->output_limit > 0.0f)
+    {
+        return pid_controller_clampf(output,
+                                     -p_controller->output_limit,
+                                     p_controller->output_limit);
+    }
+
+    return output;
 }

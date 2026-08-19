@@ -20,16 +20,17 @@
 
 static flight_control_status_t g_flight_control_status =
 {
-    {1000.0f, 1000.0f, 1000.0f, 1000.0f},
-    1000.0f,
-    0.0f,
-    0.0f,
-    0.0f,
-    0.0f,
-    0.0f,
-    0.0f,
-    FLIGHT_CONTROL_FAULT_NONE,
-    false
+    .motor_us = {1000.0f, 1000.0f, 1000.0f, 1000.0f},
+    .base_us = 1000.0f,
+    .yaw_target_rate_dps = 0.0f,
+    .roll_correction_us = 0.0f,
+    .pitch_correction_us = 0.0f,
+    .yaw_correction_us = 0.0f,
+    .roll_integrator_us = 0.0f,
+    .pitch_integrator_us = 0.0f,
+    .yaw_integrator_us = 0.0f,
+    .fault_reason = FLIGHT_CONTROL_FAULT_NONE,
+    .valid = false
 };
 
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
@@ -178,26 +179,39 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
 /*
  * 10 英寸本机首次系留短跳参数。只使用 P 项；慢斜坡仅作用于基础油门，
- * 姿态修正保持 500 Hz 实时响应。1550 us 是本轮基础油门硬上限。
+ * 姿态修正保持 500 Hz 实时响应。悬停精细曲线基于实飞测得的
+ * 1504 us 悬停点，1530 us 是本轮基础油门硬上限。
  */
 #define FLIGHT_TEST_BASE_MIN_US               (1150.0f)
-#define FLIGHT_TEST_BASE_MAX_US               (1550.0f)
+#define FLIGHT_TEST_BASE_MAX_US               (1530.0f)
+#define FLIGHT_TEST_FINE_THR_START            (0.70f)
+#define FLIGHT_TEST_FINE_THR_HOVER_LOW        (0.82f)
+#define FLIGHT_TEST_FINE_THR_HOVER_HIGH       (0.87f)
+#define FLIGHT_TEST_FINE_BASE_START_US        (1480.0f)
+#define FLIGHT_TEST_HOVER_BASE_US             (1504.0f)
 #define FLIGHT_TEST_TARGET_ANGLE_DEG          (3.0f)
+#define FLIGHT_TEST_ROLL_FEEDFORWARD_US       (0.5f)
+#define FLIGHT_TEST_PITCH_FEEDFORWARD_US      (1.0f)
 #define FLIGHT_TEST_YAW_RATE_LIMIT_DPS        (10.0f)
-#define FLIGHT_TEST_CORRECTION_LIMIT_US       (20.0f)
+#define FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US  (0.0f)
+#define FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US (0.0f)
+#define FLIGHT_TEST_YAW_CORRECTION_LIMIT_US   (0.0f)
 #define FLIGHT_TEST_OUTPUT_MIN_US             (1000.0f)
 #define FLIGHT_TEST_OUTPUT_MAX_US             (1570.0f)
-#define FLIGHT_TEST_TILT_CUTOFF_DEG           (10.0f)
-#define FLIGHT_TEST_RATE_CUTOFF_DPS           (100.0f)
-#define FLIGHT_TEST_RATE_IMMEDIATE_DPS        (300.0f)
-#define TETHERED_RATE_CONFIRM_UPDATES          (10U) /* 500 Hz 下 20 ms。 */
-#define TETHERED_RATE_IMMEDIATE_UPDATES        (2U)  /* 500 Hz 下 4 ms。 */
-#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (1.0f)
-#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (1.0f)
-#define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.30f)
-#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.40f)
-#define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.20f)
-#define FLIGHT_TEST_ROLL_RATE_TARGET_LIMIT_DPS  (10.0f)
+#define FLIGHT_TEST_TILT_CUTOFF_DEG           (40.0f)
+/*
+ * 三次带桨记录均在输出未饱和时出现持续倾斜；适度提高姿态回正和角速度
+ * 阻尼。Roll/Pitch继续保持零积分，Yaw使用小积分抵消稳态反扭矩。
+ * RA6M5三轴角速度PID没有P+I+D总输出限幅，
+ * 因此首次系留模式三轴修正限幅均设为0（禁用）；最终仍由电机
+ * 1000..1570 us范围约束。飞行中倾角硬停机阈值按RA6M5设为40度。
+ */
+#define FLIGHT_TEST_ROLL_ANGLE_KP_DPS_PER_DEG (1.5f)
+#define FLIGHT_TEST_PITCH_ANGLE_KP_DPS_PER_DEG (1.5f)
+#define FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS   (0.55f)
+#define FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS  (0.70f)
+#define FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS    (0.70f)
+#define FLIGHT_TEST_ROLL_RATE_TARGET_LIMIT_DPS  (18.0f)
 #define FLIGHT_TEST_PITCH_RATE_TARGET_LIMIT_DPS (20.0f)
 #else
 /* 历史三轴综合台架参数，仅用于拆桨验证，不作为飞行参数。 */
@@ -207,8 +221,12 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_TEST_BASE_MIN_US               (1150.0f)
 #define FLIGHT_TEST_BASE_MAX_US               (1220.0f)
 #define FLIGHT_TEST_TARGET_ANGLE_DEG          (8.0f)
+#define FLIGHT_TEST_ROLL_FEEDFORWARD_US       (0.0f)
+#define FLIGHT_TEST_PITCH_FEEDFORWARD_US      (0.0f)
 #define FLIGHT_TEST_YAW_RATE_LIMIT_DPS        (24.0f)
-#define FLIGHT_TEST_CORRECTION_LIMIT_US       (12.0f)
+#define FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US  (12.0f)
+#define FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US (12.0f)
+#define FLIGHT_TEST_YAW_CORRECTION_LIMIT_US   (12.0f)
 #define FLIGHT_TEST_OUTPUT_MAX_US             (1280.0f)
 #define FLIGHT_TEST_TILT_CUTOFF_DEG           (15.0f)
 #define FLIGHT_TEST_RATE_CUTOFF_DPS           (100.0f)
@@ -216,8 +234,12 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_TEST_BASE_MIN_US               (1150.0f)
 #define FLIGHT_TEST_BASE_MAX_US               (1250.0f)
 #define FLIGHT_TEST_TARGET_ANGLE_DEG          (10.0f)
+#define FLIGHT_TEST_ROLL_FEEDFORWARD_US       (0.0f)
+#define FLIGHT_TEST_PITCH_FEEDFORWARD_US      (0.0f)
 #define FLIGHT_TEST_YAW_RATE_LIMIT_DPS        (30.0f)
-#define FLIGHT_TEST_CORRECTION_LIMIT_US       (20.0f)
+#define FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US  (20.0f)
+#define FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US (20.0f)
+#define FLIGHT_TEST_YAW_CORRECTION_LIMIT_US   (20.0f)
 #define FLIGHT_TEST_OUTPUT_MAX_US             (1300.0f)
 #define FLIGHT_TEST_TILT_CUTOFF_DEG           (20.0f)
 #define FLIGHT_TEST_RATE_CUTOFF_DPS           (150.0f)
@@ -233,12 +255,27 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #endif
 #define FLIGHT_TEST_ANGLE_KI_DPS_PER_DEG_S    (0.0f)
 #define FLIGHT_TEST_ANGLE_KD_DPS_S_PER_DEG    (0.0f)
-#if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_PID_I_SHADOW)
-#define FLIGHT_TEST_RATE_KI_US_PER_DEG         (0.02f)
-#define FLIGHT_TEST_RATE_INTEGRATOR_LIMIT_US   (2.0f)
+#if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+#define FLIGHT_TEST_ROLL_RATE_KI_US_PER_DEG    (0.0f)
+#define FLIGHT_TEST_PITCH_RATE_KI_US_PER_DEG   (0.0f)
+#define FLIGHT_TEST_YAW_RATE_KI_US_PER_DEG     (0.05f)
+#define FLIGHT_TEST_ROLL_RATE_I_LIMIT_US       (0.0f)
+#define FLIGHT_TEST_PITCH_RATE_I_LIMIT_US      (0.0f)
+#define FLIGHT_TEST_YAW_RATE_I_LIMIT_US        (3.0f)
+#elif (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_PID_I_SHADOW)
+#define FLIGHT_TEST_ROLL_RATE_KI_US_PER_DEG    (0.02f)
+#define FLIGHT_TEST_PITCH_RATE_KI_US_PER_DEG   (0.02f)
+#define FLIGHT_TEST_YAW_RATE_KI_US_PER_DEG     (0.02f)
+#define FLIGHT_TEST_ROLL_RATE_I_LIMIT_US       (2.0f)
+#define FLIGHT_TEST_PITCH_RATE_I_LIMIT_US      (2.0f)
+#define FLIGHT_TEST_YAW_RATE_I_LIMIT_US        (2.0f)
 #else
-#define FLIGHT_TEST_RATE_KI_US_PER_DEG         (0.0f)
-#define FLIGHT_TEST_RATE_INTEGRATOR_LIMIT_US   (0.0f)
+#define FLIGHT_TEST_ROLL_RATE_KI_US_PER_DEG    (0.0f)
+#define FLIGHT_TEST_PITCH_RATE_KI_US_PER_DEG   (0.0f)
+#define FLIGHT_TEST_YAW_RATE_KI_US_PER_DEG     (0.0f)
+#define FLIGHT_TEST_ROLL_RATE_I_LIMIT_US       (0.0f)
+#define FLIGHT_TEST_PITCH_RATE_I_LIMIT_US      (0.0f)
+#define FLIGHT_TEST_YAW_RATE_I_LIMIT_US        (0.0f)
 #endif
 #define FLIGHT_TEST_RATE_KD_US_S_PER_DPS       (0.0f)
 #define FLIGHT_CONTROL_PERIOD_S                (0.002f)
@@ -265,14 +302,12 @@ static float g_powered_output_us[MOTOR_OUTPUT_COUNT] =
 #endif
 
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-/* 500 Hz 下分别对应基础油门上升 200 us/s、普通下降 500 us/s。 */
+/* 500 Hz 下基础油门上升 200 us/s、下降 250 us/s。 */
 #define TETHERED_BASE_RISE_US_PER_UPDATE       (0.4f)
-#define TETHERED_BASE_FALL_US_PER_UPDATE       (1.0f)
+#define TETHERED_BASE_FALL_US_PER_UPDATE       (0.5f)
 
 static float g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
 static bool g_tethered_fault_latched = false;
-static uint32_t g_tethered_rate_count[3] = {0U, 0U, 0U};
-static uint32_t g_tethered_rate_immediate_count[3] = {0U, 0U, 0U};
 #endif
 
 
@@ -317,24 +352,24 @@ static void flight_control_configure_controllers(void)
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     pid_controller_configure(&g_roll_rate_controller,
                              FLIGHT_TEST_ROLL_RATE_KP_US_PER_DPS,
-                             FLIGHT_TEST_RATE_KI_US_PER_DEG,
+                             FLIGHT_TEST_ROLL_RATE_KI_US_PER_DEG,
                              FLIGHT_TEST_RATE_KD_US_S_PER_DPS,
-                             FLIGHT_TEST_RATE_INTEGRATOR_LIMIT_US,
-                             FLIGHT_TEST_CORRECTION_LIMIT_US,
+                             FLIGHT_TEST_ROLL_RATE_I_LIMIT_US,
+                             FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     pid_controller_configure(&g_pitch_rate_controller,
                              FLIGHT_TEST_PITCH_RATE_KP_US_PER_DPS,
-                             FLIGHT_TEST_RATE_KI_US_PER_DEG,
+                             FLIGHT_TEST_PITCH_RATE_KI_US_PER_DEG,
                              FLIGHT_TEST_RATE_KD_US_S_PER_DPS,
-                             FLIGHT_TEST_RATE_INTEGRATOR_LIMIT_US,
-                             FLIGHT_TEST_CORRECTION_LIMIT_US,
+                             FLIGHT_TEST_PITCH_RATE_I_LIMIT_US,
+                             FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     pid_controller_configure(&g_yaw_rate_controller,
                              FLIGHT_TEST_YAW_RATE_KP_US_PER_DPS,
-                             FLIGHT_TEST_RATE_KI_US_PER_DEG,
+                             FLIGHT_TEST_YAW_RATE_KI_US_PER_DEG,
                              FLIGHT_TEST_RATE_KD_US_S_PER_DPS,
-                             FLIGHT_TEST_RATE_INTEGRATOR_LIMIT_US,
-                             FLIGHT_TEST_CORRECTION_LIMIT_US,
+                             FLIGHT_TEST_YAW_RATE_I_LIMIT_US,
+                             FLIGHT_TEST_YAW_CORRECTION_LIMIT_US,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
     g_controllers_configured = true;
 }
@@ -367,12 +402,55 @@ static uint32_t flight_test_to_us(float value)
 static void flight_control_reset_tethered_base(void)
 {
     g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
-    g_tethered_rate_count[0] = 0U;
-    g_tethered_rate_count[1] = 0U;
-    g_tethered_rate_count[2] = 0U;
-    g_tethered_rate_immediate_count[0] = 0U;
-    g_tethered_rate_immediate_count[1] = 0U;
-    g_tethered_rate_immediate_count[2] = 0U;
+}
+
+
+/*
+ * 首次短跳模式的悬停精细油门曲线：
+ *   0.00..0.70 -> 1150..1480 us，用于起转和接近离地；
+ *   0.70..0.82 -> 1480..1504 us，用于精细下降；
+ *   0.82..0.87 -> 固定1504 us，形成悬停死区；
+ *   0.87..1.00 -> 1504..1530 us，用于精细上升。
+ * 曲线连续，且全量程基础油门不超过1530 us，为三轴差动保留余量。
+ */
+static float flight_control_first_hop_base_target(float throttle)
+{
+    float normalized;
+
+    throttle = flight_test_clampf(throttle, 0.0f, 1.0f);
+
+    if (throttle <= FLIGHT_TEST_FINE_THR_START)
+    {
+        normalized = throttle / FLIGHT_TEST_FINE_THR_START;
+        return FLIGHT_TEST_BASE_MIN_US +
+               (normalized *
+                (FLIGHT_TEST_FINE_BASE_START_US -
+                 FLIGHT_TEST_BASE_MIN_US));
+    }
+
+    if (throttle < FLIGHT_TEST_FINE_THR_HOVER_LOW)
+    {
+        normalized =
+            (throttle - FLIGHT_TEST_FINE_THR_START) /
+            (FLIGHT_TEST_FINE_THR_HOVER_LOW -
+             FLIGHT_TEST_FINE_THR_START);
+        return FLIGHT_TEST_FINE_BASE_START_US +
+               (normalized *
+                (FLIGHT_TEST_HOVER_BASE_US -
+                 FLIGHT_TEST_FINE_BASE_START_US));
+    }
+
+    if (throttle <= FLIGHT_TEST_FINE_THR_HOVER_HIGH)
+    {
+        return FLIGHT_TEST_HOVER_BASE_US;
+    }
+
+    normalized =
+        (throttle - FLIGHT_TEST_FINE_THR_HOVER_HIGH) /
+        (1.0f - FLIGHT_TEST_FINE_THR_HOVER_HIGH);
+    return FLIGHT_TEST_HOVER_BASE_US +
+           (normalized *
+            (FLIGHT_TEST_BASE_MAX_US - FLIGHT_TEST_HOVER_BASE_US));
 }
 
 
@@ -403,55 +481,9 @@ static float flight_control_slew_tethered_base(float target_us)
 }
 
 
-/*
- * 单个桨载振动尖峰不再直接停机：100..300 dps 需持续 20 ms，
- * 超过 300 dps 也需连续两帧。恢复到 100 dps 内立即清零该轴计数。
- */
-static bool flight_control_tethered_rate_fault(float rate_dps,
-                                                uint32_t axis_index)
-{
-    float absolute_rate_dps = fabsf(rate_dps);
-
-    if (absolute_rate_dps <= FLIGHT_TEST_RATE_CUTOFF_DPS)
-    {
-        g_tethered_rate_count[axis_index] = 0U;
-        g_tethered_rate_immediate_count[axis_index] = 0U;
-        return false;
-    }
-
-    if (g_tethered_rate_count[axis_index] <
-        TETHERED_RATE_CONFIRM_UPDATES)
-    {
-        g_tethered_rate_count[axis_index]++;
-    }
-
-    if (absolute_rate_dps > FLIGHT_TEST_RATE_IMMEDIATE_DPS)
-    {
-        if (g_tethered_rate_immediate_count[axis_index] <
-            TETHERED_RATE_IMMEDIATE_UPDATES)
-        {
-            g_tethered_rate_immediate_count[axis_index]++;
-        }
-    }
-    else
-    {
-        g_tethered_rate_immediate_count[axis_index] = 0U;
-    }
-
-    return ((g_tethered_rate_count[axis_index] >=
-             TETHERED_RATE_CONFIRM_UPDATES) ||
-            (g_tethered_rate_immediate_count[axis_index] >=
-             TETHERED_RATE_IMMEDIATE_UPDATES));
-}
-
-
 static flight_control_fault_reason_t flight_control_tethered_fault_reason(
     const imu_attitude_t * p_attitude)
 {
-    bool roll_rate_fault;
-    bool pitch_rate_fault;
-    bool yaw_rate_fault;
-
     if ((0 == isfinite(p_attitude->roll_deg)) ||
         (0 == isfinite(p_attitude->pitch_deg)) ||
         (0 == isfinite(p_attitude->gyro_x_dps)) ||
@@ -471,31 +503,6 @@ static flight_control_fault_reason_t flight_control_tethered_fault_reason(
         return FLIGHT_CONTROL_FAULT_PITCH_TILT;
     }
 
-    roll_rate_fault = flight_control_tethered_rate_fault(
-        p_attitude->gyro_x_dps,
-        0U);
-    pitch_rate_fault = flight_control_tethered_rate_fault(
-        p_attitude->gyro_y_dps,
-        1U);
-    yaw_rate_fault = flight_control_tethered_rate_fault(
-        p_attitude->gyro_z_dps,
-        2U);
-
-    if (true == roll_rate_fault)
-    {
-        return FLIGHT_CONTROL_FAULT_ROLL_RATE;
-    }
-
-    if (true == pitch_rate_fault)
-    {
-        return FLIGHT_CONTROL_FAULT_PITCH_RATE;
-    }
-
-    if (true == yaw_rate_fault)
-    {
-        return FLIGHT_CONTROL_FAULT_YAW_RATE;
-    }
-
     return FLIGHT_CONTROL_FAULT_NONE;
 }
 #endif
@@ -513,6 +520,7 @@ static void flight_control_publish_stopped(void)
         g_flight_control_status.motor_us[motor_index] = 1000.0f;
     }
     g_flight_control_status.base_us = 1000.0f;
+    g_flight_control_status.yaw_target_rate_dps = 0.0f;
     g_flight_control_status.roll_correction_us = 0.0f;
     g_flight_control_status.pitch_correction_us = 0.0f;
     g_flight_control_status.yaw_correction_us = 0.0f;
@@ -532,6 +540,7 @@ static void flight_control_publish_stopped(void)
 static void flight_control_publish_active(
     const float motor_us[FLIGHT_CONTROL_MOTOR_COUNT],
     float base_us,
+    float yaw_target_rate_dps,
     float roll_correction_us,
     float pitch_correction_us,
     float yaw_correction_us)
@@ -546,6 +555,7 @@ static void flight_control_publish_active(
         g_flight_control_status.motor_us[motor_index] = motor_us[motor_index];
     }
     g_flight_control_status.base_us = base_us;
+    g_flight_control_status.yaw_target_rate_dps = yaw_target_rate_dps;
     g_flight_control_status.roll_correction_us = roll_correction_us;
     g_flight_control_status.pitch_correction_us = pitch_correction_us;
     g_flight_control_status.yaw_correction_us = yaw_correction_us;
@@ -667,8 +677,11 @@ void flight_control_update(bool imu_healthy)
 
     rc_command_get(&command);
 
-    if ((false == command.connected) ||
-        (true == command.throttle_low))
+    /*
+     * ARMED 后低油门只命令受斜率限制的怠速，不再直接切到 1000 us。
+     * 真正停机由 CH5 撤防、失联、IMU/控制故障或后续确认落地触发。
+     */
+    if (false == command.connected)
     {
         motor_output_all_stop();
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
@@ -702,7 +715,7 @@ void flight_control_update(bool imu_healthy)
 #endif
     {
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-        /* 倾角/角速度保护触发后禁止在CH5仍为高档时自动重新启动。 */
+        /* 倾角/非有限数保护触发后禁止在CH5仍为高档时自动重新启动。 */
         g_tethered_fault_latched = true;
         g_flight_control_fault_reason = fault_reason;
 #endif
@@ -718,12 +731,23 @@ void flight_control_update(bool imu_healthy)
         return;
     }
 
+    /*
+     * 低油门保持 ARMED 怠速和 P 反馈，但不能让未来启用的积分在地面积累。
+     * D 当前为 0；低油门期间同时重置历史状态可避免再次抬油时带入旧状态。
+     */
+    if (true == command.throttle_low)
+    {
+        flight_control_reset_controllers();
+    }
+
+#if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+    base_us = flight_control_first_hop_base_target(command.throttle);
+    /* 只限制基础油门斜率，不能延迟角速度闭环的差动修正。 */
+    base_us = flight_control_slew_tethered_base(base_us);
+#else
     base_us = FLIGHT_TEST_BASE_MIN_US +
               (command.throttle *
                (FLIGHT_TEST_BASE_MAX_US - FLIGHT_TEST_BASE_MIN_US));
-#if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-    /* 只缓升基础油门，不能延迟角速度闭环的差动修正。 */
-    base_us = flight_control_slew_tethered_base(base_us);
 #endif
     target_roll_deg = flight_test_clampf(command.roll, -1.0f, 1.0f) *
                       FLIGHT_TEST_TARGET_ANGLE_DEG;
@@ -759,6 +783,35 @@ void flight_control_update(bool imu_healthy)
         attitude.gyro_z_dps,
         FLIGHT_CONTROL_PERIOD_S);
 
+    /*
+     * 固定前馈补偿无法硬件消除的轻微重心偏置，同时保持姿态目标真实为0度。
+     * 正Roll提高左侧M1/M4；正Pitch提高前侧M1/M2。前馈计入遥测修正量，
+     * 并再次经过各轴修正限幅。
+     */
+    roll_correction_us += FLIGHT_TEST_ROLL_FEEDFORWARD_US;
+    pitch_correction_us += FLIGHT_TEST_PITCH_FEEDFORWARD_US;
+
+    if (FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US > 0.0f)
+    {
+        roll_correction_us = flight_test_clampf(
+            roll_correction_us,
+            -FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US,
+            FLIGHT_TEST_ROLL_CORRECTION_LIMIT_US);
+    }
+    if (FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US > 0.0f)
+    {
+        pitch_correction_us = flight_test_clampf(
+            pitch_correction_us,
+            -FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US,
+            FLIGHT_TEST_PITCH_CORRECTION_LIMIT_US);
+    }
+
+    if (true == command.throttle_low)
+    {
+        /* 不保留本周期候选积分，P 修正仍按上面的实时误差生效。 */
+        flight_control_reset_controllers();
+    }
+
     motor_us[0] = base_us + pitch_correction_us +
                   roll_correction_us - yaw_correction_us;
     motor_us[1] = base_us + pitch_correction_us -
@@ -784,6 +837,7 @@ void flight_control_update(bool imu_healthy)
     motor_output_all_stop();
     flight_control_publish_active(motor_us,
                                   base_us,
+                                  yaw_target_rate_dps,
                                   roll_correction_us,
                                   pitch_correction_us,
                                   yaw_correction_us);
@@ -820,6 +874,7 @@ void flight_control_update(bool imu_healthy)
     }
     flight_control_publish_active(motor_us,
                                   base_us,
+                                  yaw_target_rate_dps,
                                   roll_correction_us,
                                   pitch_correction_us,
                                   yaw_correction_us);

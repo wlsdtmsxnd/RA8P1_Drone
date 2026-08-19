@@ -30,16 +30,12 @@ velocity_cm_s = displacement_mm * 100000 / integration_us
 
 ## FSP 硬件配置
 
-当前工程还没有 P905/P310 的 pin mux，也没有光流专用 UART 实例。请在 e2 studio 的 FSP 配置中新增一个 SCI UART：
+当前工程已配置 `g_uart_flow_tof`：
 
-1. 打开 `configuration.xml`。
-2. 在 Stacks 中新增 `UART (r_sci_b_uart)`，命名建议 `g_uart_flow_tof`。
-3. Channel 选择必须以 Pins 页面里 P905/P310 可分配到同一组 SCI 为准。
-4. Callback 填 `up_tof_uart_callback`。
-5. UART 格式：8 data bits，no parity，1 stop bit，no flow control。
-6. Baud rate 填 FLOW_TOOL 确认的值：通常先试 `460800`，若无帧再试 `115200`。
-7. Pins 页面把 P905/P310 配为该 SCI 的 RXD/TXD。模块 TX 接 MCU RX，模块 RX 接 MCU TX。
-8. 重新 Generate Project Content。
+- SCI3，460800 bps，8 data bits，no parity，1 stop bit，no flow control。
+- Callback 为 `up_tof_uart_callback`。
+- P905 = RXD3，P310 = TXD3。
+- 若 FLOW_TOOL 确认实物是固定 115200 bps 的 T1/T2，必须同步修改 FSP 波特率；不要盲试飞。
 
 模块供电和接线：
 
@@ -52,33 +48,9 @@ UP_T3-001 RX  -> RA8P1 UART TX
 
 ## 线程接入
 
-生成 UART 实例后，新增或复用一个 FreeRTOS 线程，入口中调用：
-
-```c
-#include "driver/up_tof.h"
-
-void flow_tof_thread_entry(void * pvParameters)
-{
-    fsp_err_t err;
-
-    FSP_PARAMETER_NOT_USED(pvParameters);
-
-    err = up_tof_init(&g_uart_flow_tof);
-
-    if (FSP_SUCCESS != err)
-    {
-        vTaskSuspend(NULL);
-    }
-
-    while (1)
-    {
-        up_tof_process();
-        vTaskDelay(pdMS_TO_TICKS(2U));
-    }
-}
-```
-
-不要把这段直接填进 `ra_gen` 生成文件里；让 FSP 生成线程壳，业务代码放到 `src/*_entry.c`。
+不新增控制线程。现有 `telemetry_thread_entry()` 打开光流 UART，并在每个
+遥测周期调用 `up_tof_process()`。数据只进入 `up_tof_data_t` 快照和 VOFA 记录，
+没有被 `flight_control_update()` 或任何 PID 读取。
 
 ## VOFA 遥测测试
 
@@ -104,8 +76,10 @@ VOFA JustFloat 通道含义：
 | I3 | `flow_x_integral` 原始值 |
 | I4 | `flow_y_integral` 原始值 |
 | I5 | 有效帧的 TOF confidence，无效时为 0 |
-| I6 | 飞控安全状态 |
-| I7 | IMU ready |
+
+`TETHERED_FLIGHT_MODE_FIRST_HOP` 当前优先记录 Roll/Pitch 指令、姿态和基础
+油门，不再复用 I17-I23 记录光流。需要复测模块时，应先拆桨并切换到
+`TELEMETRY_SOURCE_FLOW_TOF` 专用遥测源，按上表检查 I0-I5。
 
 ## 分步验收
 

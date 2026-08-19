@@ -16,14 +16,18 @@
             [9] = sci_b_uart_txi_isr, /* SCI2 TXI (Transmit data empty) */
             [10] = sci_b_uart_tei_isr, /* SCI2 TEI (Transmit end) */
             [11] = sci_b_uart_eri_isr, /* SCI2 ERI (Receive error) */
-            [12] = sci_b_uart_rxi_isr, /* SCI0 RXI (Receive data full) */
-            [13] = sci_b_uart_txi_isr, /* SCI0 TXI (Transmit data empty) */
-            [14] = sci_b_uart_tei_isr, /* SCI0 TEI (Transmit end) */
-            [15] = sci_b_uart_eri_isr, /* SCI0 ERI (Receive error) */
-            [16] = sci_b_uart_rxi_isr, /* SCI4 RXI (Receive data full) */
-            [17] = sci_b_uart_txi_isr, /* SCI4 TXI (Transmit data empty) */
-            [18] = sci_b_uart_tei_isr, /* SCI4 TEI (Transmit end) */
-            [19] = sci_b_uart_eri_isr, /* SCI4 ERI (Receive error) */
+            [12] = sci_b_uart_rxi_isr, /* SCI3 RXI (Receive data full) */
+            [13] = sci_b_uart_txi_isr, /* SCI3 TXI (Transmit data empty) */
+            [14] = sci_b_uart_tei_isr, /* SCI3 TEI (Transmit end) */
+            [15] = sci_b_uart_eri_isr, /* SCI3 ERI (Receive error) */
+            [16] = sci_b_uart_rxi_isr, /* SCI0 RXI (Receive data full) */
+            [17] = sci_b_uart_txi_isr, /* SCI0 TXI (Transmit data empty) */
+            [18] = sci_b_uart_tei_isr, /* SCI0 TEI (Transmit end) */
+            [19] = sci_b_uart_eri_isr, /* SCI0 ERI (Receive error) */
+            [20] = sci_b_uart_rxi_isr, /* SCI4 RXI (Receive data full) */
+            [21] = sci_b_uart_txi_isr, /* SCI4 TXI (Transmit data empty) */
+            [22] = sci_b_uart_tei_isr, /* SCI4 TEI (Transmit end) */
+            [23] = sci_b_uart_eri_isr, /* SCI4 ERI (Receive error) */
         };
         #if BSP_FEATURE_ICU_HAS_IELSR
         const bsp_interrupt_event_t g_interrupt_event_link_select[BSP_ICU_VECTOR_NUM_ENTRIES] =
@@ -40,14 +44,18 @@
             [9] = BSP_PRV_VECT_ENUM(EVENT_SCI2_TXI,GROUP1), /* SCI2 TXI (Transmit data empty) */
             [10] = BSP_PRV_VECT_ENUM(EVENT_SCI2_TEI,GROUP2), /* SCI2 TEI (Transmit end) */
             [11] = BSP_PRV_VECT_ENUM(EVENT_SCI2_ERI,GROUP3), /* SCI2 ERI (Receive error) */
-            [12] = BSP_PRV_VECT_ENUM(EVENT_SCI0_RXI,GROUP4), /* SCI0 RXI (Receive data full) */
-            [13] = BSP_PRV_VECT_ENUM(EVENT_SCI0_TXI,GROUP5), /* SCI0 TXI (Transmit data empty) */
-            [14] = BSP_PRV_VECT_ENUM(EVENT_SCI0_TEI,GROUP6), /* SCI0 TEI (Transmit end) */
-            [15] = BSP_PRV_VECT_ENUM(EVENT_SCI0_ERI,GROUP7), /* SCI0 ERI (Receive error) */
-            [16] = BSP_PRV_VECT_ENUM(EVENT_SCI4_RXI,GROUP0), /* SCI4 RXI (Receive data full) */
-            [17] = BSP_PRV_VECT_ENUM(EVENT_SCI4_TXI,GROUP1), /* SCI4 TXI (Transmit data empty) */
-            [18] = BSP_PRV_VECT_ENUM(EVENT_SCI4_TEI,GROUP2), /* SCI4 TEI (Transmit end) */
-            [19] = BSP_PRV_VECT_ENUM(EVENT_SCI4_ERI,GROUP3), /* SCI4 ERI (Receive error) */
+            [12] = BSP_PRV_VECT_ENUM(EVENT_SCI3_RXI,GROUP4), /* SCI3 RXI (Receive data full) */
+            [13] = BSP_PRV_VECT_ENUM(EVENT_SCI3_TXI,GROUP5), /* SCI3 TXI (Transmit data empty) */
+            [14] = BSP_PRV_VECT_ENUM(EVENT_SCI3_TEI,GROUP6), /* SCI3 TEI (Transmit end) */
+            [15] = BSP_PRV_VECT_ENUM(EVENT_SCI3_ERI,GROUP7), /* SCI3 ERI (Receive error) */
+            [16] = BSP_PRV_VECT_ENUM(EVENT_SCI0_RXI,GROUP0), /* SCI0 RXI (Receive data full) */
+            [17] = BSP_PRV_VECT_ENUM(EVENT_SCI0_TXI,GROUP1), /* SCI0 TXI (Transmit data empty) */
+            [18] = BSP_PRV_VECT_ENUM(EVENT_SCI0_TEI,GROUP2), /* SCI0 TEI (Transmit end) */
+            [19] = BSP_PRV_VECT_ENUM(EVENT_SCI0_ERI,GROUP3), /* SCI0 ERI (Receive error) */
+            [20] = BSP_PRV_VECT_ENUM(EVENT_SCI4_RXI,GROUP4), /* SCI4 RXI (Receive data full) */
+            [21] = BSP_PRV_VECT_ENUM(EVENT_SCI4_TXI,GROUP5), /* SCI4 TXI (Transmit data empty) */
+            [22] = BSP_PRV_VECT_ENUM(EVENT_SCI4_TEI,GROUP6), /* SCI4 TEI (Transmit end) */
+            [23] = BSP_PRV_VECT_ENUM(EVENT_SCI4_ERI,GROUP7), /* SCI4 ERI (Receive error) */
         };
         #endif
         #endif
