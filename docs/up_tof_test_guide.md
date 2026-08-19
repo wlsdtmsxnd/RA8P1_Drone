@@ -1,103 +1,126 @@
-# UP-T301/UP_T3-001 光流 TOF 接入与测试指南
+# UP-T301 / T3-001（UPIX）光流 TOF 测试指南
 
-## 用户请求与资料说明
+## 1. 本工程采用的模块参数
 
-你的请求是：在 RA8P1 飞控工程中接入 UP_T3-001 光流+TOF 模块，使用飞控端引脚 P905/P310，并提供测试指南。
+本指南只针对产品规格书中的 **T3-001（UP-T301）UPIX 协议**：
 
-资料中的关键说明只作为驱动依据：UPIXELS 光流+TOF 帧为 `0xFE 0x0A + 10 字节 payload + XOR + 0x55`；payload 依次是 `flow_x_integral`、`flow_y_integral`、`integration_timespan`、`distance_mm`、`valid`、`tof_confidence`。其中 `flow_*_integral` 是 `radians * 10000`，`valid == 0xF5` 表示光流可用。
+- UART：`460800 bps`、8 data bits、no parity、1 stop bit、no flow control。
+- 输出频率：约 80 Hz。
+- 电气：模块供电 3.7～5.0 V，串口电平为 3.3 V LVTTL。
+- 距离范围：200～20000 mm；超量程值为 `0xFFFF`。
+- 光流有效字节：`0xF5`；光照应大于 30 lux，并使用有纹理地面。
+- 上电初始化最长约 3 s。
 
-注意：UP-T301 产品规格书写默认通信速率为 460800 bps；协议介绍手册写 T1/T2 固定 115200 bps、302GS 固定 460800 bps。你使用的型号是 UP_T3-001，建议先用厂家 FLOW_TOOL 确认当前协议和波特率，再在 FSP 中填同一个值。若不确定，优先试 460800 bps，再试 115200 bps。
+不再尝试 115200 bps；该波特率不是这份 T3-001 规格书给出的默认参数。
 
-## 已加入的驱动
+## 2. 接线
 
-- `src/driver/up_tof.c`
-- `src/driver/up_tof.h`
+模块插座定义和 MCU 方向是相反视角，按信号实际流向接：
 
-驱动提供：
+| T3-001 引脚 | 飞控引脚 | RA8P1 复用方向 |
+|---|---|---|
+| Pin 1 TX | P905 | SCI3_RXD3（MCU RX） |
+| Pin 2 RX | P310 | SCI3_TXD3（MCU TX） |
+| Pin 3 VCC | 3.7～5.0 V | 模块供电 |
+| Pin 4 GND | GND | 共地 |
 
-- `up_tof_uart_callback()`：填到 FSP UART Callback。
-- `up_tof_init(&g_uart_xxx)`：打开 UART 并清空解析状态。
-- `up_tof_process()`：在线程中周期调用，解析接收环形缓冲区。
-- `up_tof_get_data()`：读取距离、速度、原始积分、质量和错误计数快照。
-- `up_tof_is_ready()`：最近 200 ms 内收到 `valid == 0xF5` 的有效帧时返回 true。
+因此，从模块线名看是“P905 接 TX、P310 接 RX”；从 MCU 外设方向看则是
+“P905 是 RX、P310 是 TX”。当前 FSP 配置与此一致，不要交换 MCU 的引脚复用。
 
-速度计算：
+## 3. 驱动行为
 
-```text
-displacement_mm = flow_integral / 10000 * distance_mm
-velocity_cm_s = displacement_mm * 100000 / integration_us
-```
-
-## FSP 硬件配置
-
-当前工程已配置 `g_uart_flow_tof`：
-
-- SCI3，460800 bps，8 data bits，no parity，1 stop bit，no flow control。
-- Callback 为 `up_tof_uart_callback`。
-- P905 = RXD3，P310 = TXD3。
-- 若 FLOW_TOOL 确认实物是固定 115200 bps 的 T1/T2，必须同步修改 FSP 波特率；不要盲试飞。
-
-模块供电和接线：
+驱动按固定 14 字节 UPIX 帧解析：
 
 ```text
-UP_T3-001 VCC -> 3.7-5.0 V
-UP_T3-001 GND -> 飞控 GND
-UP_T3-001 TX  -> RA8P1 UART RX
-UP_T3-001 RX  -> RA8P1 UART TX
+FE 0A | flow_x(i16 LE) flow_y(i16 LE) integration_us(u16 LE)
+      | distance_mm(u16 LE) flow_valid(u8) confidence(u8)
+      | payload XOR | 55
 ```
 
-## 线程接入
+速度使用原始量直接换算，避免先量化到整数毫米造成低速误差：
 
-不新增控制线程。现有 `telemetry_thread_entry()` 打开光流 UART，并在每个
-遥测周期调用 `up_tof_process()`。数据只进入 `up_tof_data_t` 快照和 VOFA 记录，
-没有被 `flight_control_update()` 或任何 PID 读取。
-
-## VOFA 遥测测试
-
-我已在 `src/code/project_config.h` 加了 `TELEMETRY_SOURCE_FLOW_TOF`。要用 3DR 数传看数据时，把当前遥测源：
-
-```c
-#define TELEMETRY_SOURCE                 TELEMETRY_SOURCE_...
+```text
+velocity_cm_s = flow_integral * distance_mm * 10 / integration_us
 ```
 
-临时改成：
+数据快照将有效性拆成四类：
 
-```c
-#define TELEMETRY_SOURCE                 TELEMETRY_SOURCE_FLOW_TOF
-```
+- `frame_valid`：最近 200 ms 内收到结构、XOR 和帧尾均正确的帧。
+- `flow_valid`：帧内光流标志为 `0xF5`。
+- `tof_valid`：距离位于 200～20000 mm，不接受 `0xFFFF`。
+- `velocity_valid`：光流、TOF 和非零积分时间同时有效。
 
-VOFA JustFloat 通道含义：
+TOF 失效时速度强制为 0；不能把 65535 mm 代入速度公式。UART 接收与解析由
+导航传感器任务执行，遥测任务只读取临界区保护的数据快照。
 
-| 通道 | 含义 |
-|---|---|
-| I0 | TOF 距离，m |
-| I1 | X 方向速度，cm/s |
-| I2 | Y 方向速度，cm/s |
-| I3 | `flow_x_integral` 原始值 |
-| I4 | `flow_y_integral` 原始值 |
-| I5 | 有效帧的 TOF confidence，无效时为 0 |
+## 4. VOFA+ 通道
 
-`TETHERED_FLIGHT_MODE_FIRST_HOP` 当前优先记录 Roll/Pitch 指令、姿态和基础
-油门，不再复用 I17-I23 记录光流。需要复测模块时，应先拆桨并切换到
-`TELEMETRY_SOURCE_FLOW_TOF` 专用遥测源，按上表检查 I0-I5。
+无额外编译宏的 SAFE 构建已经选择 `TELEMETRY_SOURCE_FLOW_TOF`。当前工程的
+Debug 和 Release 均已移除系留 profile/ack 宏，可以用于本项拆桨测试。3DR
+数传仍按其自身串口配置连接 VOFA+，协议选择 JustFloat，共 16 通道、50 Hz：
 
-## 分步验收
+| 通道 | 含义 | 正常预期 |
+|---|---|---|
+| I0 | `distance_mm / 1000`，m | 与实测高度接近 |
+| I1 | X 速度，cm/s | 静止接近 0 |
+| I2 | Y 速度，cm/s | 静止接近 0 |
+| I3 | X 光流积分原始值 | 移动时正负变化 |
+| I4 | Y 光流积分原始值 | 移动时正负变化 |
+| I5 | 积分时间，us | 持续大于 0 |
+| I6 | `frame_valid` | 正常持续为 1 |
+| I7 | `flow_valid` | 光照和纹理良好时为 1 |
+| I8 | `tof_valid` | 量程内为 1 |
+| I9 | `velocity_valid` | 正常移动测试时为 1 |
+| I10 | TOF confidence 原始值 | 0～255，仅作质量观察 |
+| I11 | 正确帧累计数 | 约每秒增加 80 |
+| I12 | XOR 错误累计数 | 稳定为 0 |
+| I13 | 格式错误累计数 | 稳定为 0 |
+| I14 | UART 错误累计数 | 稳定为 0 |
+| I15 | 接收环形缓冲区溢出数 | 稳定为 0 |
 
-1. 先拆桨，只给模块和飞控上电。
-2. 用 FLOW_TOOL 连接模块，确认当前输出协议为 `upixels`，并记录波特率。
-3. 在 FSP 配好 UART 后编译烧录。
-4. 打开 VOFA，选择 JustFloat，确认 I0 距离随高度变化。
-5. 模块静止放在纹理明显、光照充足的地面上方，I1/I2 应接近 0。
-6. 水平缓慢移动模块，I1/I2 应有正负变化；若方向与机体坐标相反，先记录，再在控制融合层做轴向修正。
-7. 遮挡镜头或对着弱纹理/过暗表面时，I5 应降为 0 或有效性变差。
-8. 若 I0 正常但 I1/I2 长期为 0，检查光照、纹理和模块离地高度是否在 0.2-20 m 范围内。
-9. 若完全无数据，优先检查波特率、TX/RX 是否交叉、P905/P310 是否真的映射到同一个 SCI UART。
+## 5. 拆桨上板测试流程
 
-## 后续接入控制前的安全要求
+### A. 安全和环境准备
 
-当前驱动只发布传感器数据，没有把光流接入位置控制。接入定点前至少需要完成：
+1. 拆下全部螺旋桨，断开 ESC 动力电源，只给主控、模块和数传供电。
+2. 按第 2 节接线，确认共地；模块镜头朝向有清晰纹理的水平地面。
+3. 初测高度选 0.3～1.0 m，保证环境光照大于 30 lux。
+4. 当前 Debug/Release 都是无 profile/ack 宏的 SAFE 配置；执行 `clean all`
+   后烧录，打开 VOFA+ JustFloat 16 通道。
 
-- 确认模块安装方向和机体 FRD 坐标的 X/Y 符号。
-- 增加低质量、超时、距离异常时的降级逻辑。
-- 只在解锁前或低速安全状态下验证闭环参数。
-- 光流定点首次测试必须拆桨或固定台架验证，再上桨低高度试飞。
+### B. UART 和协议验收
+
+1. 上电后等待 3 s。
+2. 检查 I6 持续为 1，I11 约每秒增加 80。
+3. 连续观察至少 60 s，I12～I15 应保持 0。
+4. 若 I6 始终为 0，依次检查：模块供电和共地、TX/RX 交叉关系、SCI3
+   460800 8N1、P905/P310 复用。
+5. 若 I11 增长但 I12/I13 快速增长，优先检查波特率、信号完整性和接线接触。
+
+### C. TOF 验收
+
+1. 在 0.3 m、0.5 m、1.0 m 三个高度静止测量，各记录 10 s 平均值。
+2. I8 应为 1，I0 应随高度单调变化；0.2～6 m 范围按规格书以 ±6 cm
+   作为模块精度验收上限。
+3. 让 TOF 超量程或遮挡到无法测距：I8 和 I9 必须变为 0，I0 可能显示
+   `65.535`（原始 `0xFFFF`），但 I1/I2 必须为 0。
+4. 该场景下 I7 仍可能为 1，这是协议允许的“光流有效、TOF 无效”，不是解析错误。
+
+### D. 光流和方向验收
+
+1. 保持高度不变并静止：I7/I9 应为 1，I1/I2 应在 0 附近小幅波动。
+2. 沿机体前、后、右、左四个方向分别匀速平移约 0.5 m；记录 I1/I2 和
+   I3/I4 的符号，不要凭安装图猜测轴向。
+3. 同一路径正向与反向的速度符号应相反，幅值应大致对称。
+4. 对准纯色无纹理表面或降低照度：I7/I9 应降为 0；TOF 正常时 I8 可以继续为 1。
+5. 拔掉模块 TX 线：200 ms 后 I6～I9 必须全为 0，I1/I2 必须归零。
+
+### E. 通过标准
+
+- 60 s 内正确帧持续增长，四类错误计数不增长。
+- TOF 三点测量符合量程和精度预期，`0xFFFF` 不产生虚假速度。
+- 静止速度无持续偏置；双向移动符号相反且重复测试一致。
+- 弱纹理、弱光、TOF 超量程和断线时，各有效标志按上述规则独立降级。
+
+完成这些测试后再决定机体系 X/Y 的交换和正负号，并在融合层做坐标变换；
+当前驱动保持模块原始坐标，不直接接入位置闭环。

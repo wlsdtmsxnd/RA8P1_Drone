@@ -1,15 +1,17 @@
 #include "telemetry_thread.h"
 
+#include "code/actuator_manager.h"
 #include "code/esc_bench_test.h"
 #include "code/flight_control.h"
 #include "code/flight_safety.h"
+#include "code/flight_snapshot.h"
 #include "code/imu.h"
 #include "code/project_config.h"
 #include "code/rc_command.h"
 #include "driver/radio_3dr.h"
 #include "driver/crsf.h"
 #include "driver/gps_nmea.h"
-#include "driver/motor_output.h"
+#include "driver/tpf_flow.h"
 #include "driver/up_tof.h"
 
 #include <string.h>
@@ -22,6 +24,10 @@
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
 #define TELEMETRY_PERIOD_TICKS       pdMS_TO_TICKS(10U)
 #define TELEMETRY_TX_TIMEOUT_TICKS   pdMS_TO_TICKS(10U)
+#elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+/* 18 通道在 57600 baud 下约 13.2 ms，20 ms 周期保留调度余量。 */
+#define TELEMETRY_PERIOD_TICKS       pdMS_TO_TICKS(20U)
+#define TELEMETRY_TX_TIMEOUT_TICKS   pdMS_TO_TICKS(18U)
 #else
 /* 其他遥测保持 20 ms，即 50 Hz。 */
 #define TELEMETRY_PERIOD_TICKS       pdMS_TO_TICKS(20U)
@@ -33,9 +39,19 @@
 #if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
 /* 20 Hz、51 通道：原始首读/复读、是否替换以及滤波后三轴。 */
 #define TELEMETRY_CHANNEL_COUNT      (51U)
+#elif ((TELEMETRY_SOURCE == TELEMETRY_SOURCE_FLOW_TOF) && \
+       (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
+       (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_DISABLED) && \
+       (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_DISABLED) && \
+       (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_DISABLED))
+/* UPIX 光流 TOF：原始量、四类有效标志和链路错误计数。 */
+#define TELEMETRY_CHANNEL_COUNT      (16U)
+#elif (PROJECT_BUILD_PROFILE == PROJECT_BUILD_PROFILE_SAFE)
+/* 只给主板上电时使用 17 路完整 TPF 数据，50 Hz 发送。 */
+#define TELEMETRY_CHANNEL_COUNT      (17U)
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-/* 系留短跳以 50 Hz 发送 25 通道控制、指令、姿态与Yaw积分诊断数据。 */
-#define TELEMETRY_CHANNEL_COUNT      (25U)
+/* 系留起飞/悬停只保留闭环、执行器和安全状态所需的 18 路数据。 */
+#define TELEMETRY_CHANNEL_COUNT      (18U)
 #else
 /* 普通模式使用 8 个数据通道。 */
 #define TELEMETRY_CHANNEL_COUNT      (8U)
@@ -59,12 +75,13 @@ void telemetry_thread_entry(void * pvParameters)
 #if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
     imu_raw_diagnostic_t raw_diagnostic;               /* 原始异常捕获快照。 */
     imu_attitude_t attitude;                            /* 守卫后的滤波角速度。 */
+#elif ((PROJECT_BUILD_PROFILE == PROJECT_BUILD_PROFILE_SAFE) && \
+       (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLOW_TOF))
+    imu_attitude_t attitude;                            /* TPF 倾角/角速度诊断。 */
 #elif (ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED)
     esc_bench_status_t bench_status;                   /* ESC 台架状态。 */
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-    imu_attitude_t attitude;                           /* 系留姿态与角速度快照。 */
-    flight_control_status_t control_status;            /* 系留控制器状态。 */
-    rc_command_t command;                              /* 系留遥控指令。 */
+    flight_snapshot_t flight_snapshot;                 /* 同一控制周期的一致快照。 */
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
     imu_attitude_t attitude;                           /* 桨载滤波角速度快照。 */
 #else
@@ -103,6 +120,9 @@ void telemetry_thread_entry(void * pvParameters)
     crsf_data_t rc_data;                               /* CRSF 遥控数据快照。 */
 #endif
 #endif
+#if (TPF_FLOW_DIAGNOSTIC_ENABLED == 1U)
+    tpf_flow_data_t tpf_data;                          /* RA6M5 同款光流快照。 */
+#endif
     float channel_data[TELEMETRY_CHANNEL_COUNT];       /* VOFA+ 数据通道。 */
     uint8_t frame_buffer[TELEMETRY_FRAME_SIZE];        /* JustFloat 数据帧。 */
     uint32_t frame_tail = VOFA_JUSTFLOAT_TAIL;         /* JustFloat 帧尾。 */
@@ -121,14 +141,14 @@ void telemetry_thread_entry(void * pvParameters)
 
     vTaskDelay(pdMS_TO_TICKS(TELEMETRY_POWER_STABLE_DELAY_MS));
 
-    /* 光流 TOF 只做被动采集；初始化失败不影响数传与飞行控制。 */
-    (void) up_tof_init(&g_uart_flow_tof);
-
     last_wake_time = xTaskGetTickCount();
 
     while (1)
     {
-        up_tof_process();
+#if (TPF_FLOW_DIAGNOSTIC_ENABLED == 1U)
+        /* 采集由导航传感器任务独占，数传只读临界区保护的副本。 */
+        tpf_flow_get_data(&tpf_data);
+#endif
 
         for (channel_index = 0U;
              channel_index < TELEMETRY_CHANNEL_COUNT;
@@ -180,63 +200,73 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[48] = attitude.gyro_x_dps;
         channel_data[49] = attitude.gyro_y_dps;
         channel_data[50] = attitude.gyro_z_dps;
+#elif ((PROJECT_BUILD_PROFILE == PROJECT_BUILD_PROFILE_SAFE) && \
+       (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLOW_TOF))
+        imu_get_attitude(&attitude);
+        channel_data[0] = (float) tpf_data.distance_mm / 1000.0f;
+        channel_data[1] = tpf_data.tilt_height_mm / 1000.0f;
+        channel_data[2] = (float) tpf_data.raw_velocity_x;
+        channel_data[3] = (float) tpf_data.raw_velocity_y;
+        channel_data[4] = tpf_data.scaled_velocity_x_mm_s;
+        channel_data[5] = tpf_data.scaled_velocity_y_mm_s;
+        channel_data[6] = tpf_data.filtered_velocity_x_mm_s;
+        channel_data[7] = tpf_data.filtered_velocity_y_mm_s;
+        channel_data[8] = (float) tpf_data.quality;
+        channel_data[9] = tpf_data.valid ? 1.0f : 0.0f;
+        channel_data[10] = (float) tpf_data.sample_count;
+        channel_data[11] = (float) tpf_data.ack_error_count;
+        channel_data[12] = (float) tpf_data.bus_error_count;
+        channel_data[13] = attitude.roll_deg;
+        channel_data[14] = attitude.pitch_deg;
+        channel_data[15] = attitude.gyro_x_dps;
+        channel_data[16] = attitude.gyro_y_dps;
 #elif (ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED)
         esc_bench_test_get_status(&bench_status);
 
         for (channel_index = 0U;
-             channel_index < MOTOR_OUTPUT_COUNT;
+             channel_index < ACTUATOR_MANAGER_COUNT;
              channel_index++)
         {
             channel_data[channel_index] =
-                (float) motor_output_get_us(channel_index);
+                (float) actuator_manager_get_us(channel_index);
         }
 
         channel_data[4] = (float) bench_status.phase;
         channel_data[5] = (float) bench_status.active_motor;
-        channel_data[6] = motor_output_is_ready() ? 1.0f : 0.0f;
+        channel_data[6] = actuator_manager_is_ready() ? 1.0f : 0.0f;
         channel_data[7] = (float) bench_status.elapsed_ms / 1000.0f;
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+        flight_snapshot_get(&flight_snapshot);
+
         for (channel_index = 0U;
-             channel_index < MOTOR_OUTPUT_COUNT;
+             channel_index < ACTUATOR_MANAGER_COUNT;
              channel_index++)
         {
             channel_data[channel_index] =
-                (float) motor_output_get_us(channel_index);
+                (float) flight_snapshot.actuator_us[channel_index];
         }
 
-        imu_get_attitude(&attitude);
-        flight_control_get_status(&control_status);
-        rc_command_get(&command);
-        channel_data[4] = command.throttle;
-        channel_data[5] = attitude.gyro_x_dps;
-        channel_data[6] = attitude.gyro_y_dps;
-        channel_data[7] = command.yaw;
-        channel_data[8] = attitude.gyro_z_dps;
-        channel_data[9] = (float) flight_safety_get_state();
-        channel_data[10] = (float) control_status.fault_reason;
-        channel_data[11] = control_status.yaw_target_rate_dps;
-        channel_data[12] = control_status.roll_correction_us;
-        channel_data[13] = control_status.valid ? 1.0f : 0.0f;
-        channel_data[14] = (float) flight_safety_get_stop_reason();
-        channel_data[15] = control_status.pitch_correction_us;
-        channel_data[16] = control_status.yaw_correction_us;
-        channel_data[17] = command.roll;
-        channel_data[18] = command.pitch;
-        channel_data[19] = attitude.pitch_deg;
-        channel_data[20] = attitude.roll_deg;
-        channel_data[21] = control_status.base_us;
-        channel_data[22] = command.throttle_low ? 1.0f : 0.0f;
-        /* 无磁力计下仅用于单次短跳内观察累计转角，不作为航向闭环依据。 */
-        channel_data[23] = attitude.yaw_deg;
-        /* 小积分试飞必须记录积分本体，确认限幅和低油门复位均生效。 */
-        channel_data[24] = control_status.yaw_integrator_us;
+        channel_data[4] = flight_snapshot.command.throttle;
+        channel_data[5] = flight_snapshot.command.roll;
+        channel_data[6] = flight_snapshot.command.pitch;
+        channel_data[7] = flight_snapshot.command.yaw;
+        channel_data[8] = flight_snapshot.attitude.roll_deg;
+        channel_data[9] = flight_snapshot.attitude.pitch_deg;
+        channel_data[10] = flight_snapshot.attitude.gyro_x_dps;
+        channel_data[11] = flight_snapshot.attitude.gyro_y_dps;
+        channel_data[12] = flight_snapshot.attitude.gyro_z_dps;
+        channel_data[13] = flight_snapshot.control.roll_correction_us;
+        channel_data[14] = flight_snapshot.control.pitch_correction_us;
+        channel_data[15] = flight_snapshot.control.yaw_correction_us;
+        channel_data[16] = (float) flight_snapshot.safety_state;
+        channel_data[17] = (float) flight_snapshot.stop_reason;
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
         for (channel_index = 0U;
-             channel_index < MOTOR_OUTPUT_COUNT;
+             channel_index < ACTUATOR_MANAGER_COUNT;
              channel_index++)
         {
             channel_data[channel_index] =
-                (float) motor_output_get_us(channel_index);
+                (float) actuator_manager_get_us(channel_index);
         }
 
         imu_get_attitude(&attitude);
@@ -282,7 +312,17 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[2] = (float) flow_data.velocity_y_cm_s;
         channel_data[3] = (float) flow_data.flow_x_integral;
         channel_data[4] = (float) flow_data.flow_y_integral;
-        channel_data[5] = flow_data.valid ? (float) flow_data.tof_confidence : 0.0f;
+        channel_data[5] = (float) flow_data.integration_us;
+        channel_data[6] = flow_data.frame_valid ? 1.0f : 0.0f;
+        channel_data[7] = flow_data.flow_valid ? 1.0f : 0.0f;
+        channel_data[8] = flow_data.tof_valid ? 1.0f : 0.0f;
+        channel_data[9] = flow_data.velocity_valid ? 1.0f : 0.0f;
+        channel_data[10] = (float) flow_data.tof_confidence;
+        channel_data[11] = (float) flow_data.frame_count;
+        channel_data[12] = (float) flow_data.checksum_error_count;
+        channel_data[13] = (float) flow_data.parse_error_count;
+        channel_data[14] = (float) flow_data.uart_error_count;
+        channel_data[15] = (float) flow_data.rx_overflow_count;
 #elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_FLIGHT_CONTROL)
         flight_control_get_status(&control_status);
 #if (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_PID_I_SHADOW)
@@ -304,11 +344,11 @@ void telemetry_thread_entry(void * pvParameters)
         channel_data[7] = (float) flight_safety_get_state();
 #elif (TELEMETRY_SOURCE == TELEMETRY_SOURCE_MOTOR_OUTPUT)
         for (channel_index = 0U;
-             channel_index < MOTOR_OUTPUT_COUNT;
+             channel_index < ACTUATOR_MANAGER_COUNT;
              channel_index++)
         {
             channel_data[channel_index] =
-                (float) motor_output_get_us(channel_index);
+                (float) actuator_manager_get_us(channel_index);
         }
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_IMU_LEVEL)
         imu_get_attitude(&attitude);
@@ -368,10 +408,12 @@ void telemetry_thread_entry(void * pvParameters)
         }
 #endif
 
-#if ((ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
+#if ((TPF_FLOW_DIAGNOSTIC_ENABLED == 0U) && \
+     (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
      (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_DISABLED) && \
      (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_DISABLED) && \
      (TELEMETRY_SOURCE != TELEMETRY_SOURCE_IMU_CALIBRATION) && \
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLOW_TOF) && \
      (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLIGHT_CONTROL) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_RATE) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_CASCADE) && \
@@ -381,9 +423,11 @@ void telemetry_thread_entry(void * pvParameters)
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_POWERED_CONTROL))
         channel_data[6] = (float) flight_safety_get_state();
 #endif
-#if ((ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
+#if ((TPF_FLOW_DIAGNOSTIC_ENABLED == 0U) && \
+     (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED) && \
      (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_DISABLED) && \
      (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_DISABLED) && \
+     (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLOW_TOF) && \
      (TELEMETRY_SOURCE != TELEMETRY_SOURCE_FLIGHT_CONTROL) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_RATE) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_IMU_CASCADE) && \

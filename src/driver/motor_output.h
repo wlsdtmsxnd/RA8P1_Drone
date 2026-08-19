@@ -29,7 +29,8 @@ motor_output_status_t motor_output_set_us(uint32_t motor_index,
 /* 返回最近一次成功写入该通道的脉宽；索引非法时返回 0。 */
 uint32_t motor_output_get_us(uint32_t motor_index);
 
-void motor_output_all_stop(void);
+/* 写入四路停机脉宽；任一路失败都会返回错误。 */
+motor_output_status_t motor_output_all_stop(void);
 bool motor_output_is_ready(void);
 
 #endif /* DRIVER_MOTOR_OUTPUT_H_ */

@@ -1,9 +1,9 @@
 #include "flight_safety.h"
 
+#include "actuator_manager.h"
 #include "imu.h"
 #include "project_config.h"
 #include "rc_command.h"
-#include "../driver/motor_output.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -53,7 +53,7 @@ static void flight_safety_stop(flight_safety_state_t state)
 {
     g_flight_safety_state = state;
     g_arm_start_tick = 0U;
-    motor_output_all_stop();
+    (void) actuator_manager_inhibit();
 }
 
 
@@ -148,14 +148,24 @@ void flight_safety_update(bool imu_healthy)
         {
             g_flight_safety_state = FLIGHT_SAFETY_ARMING_WAIT;
             g_arm_start_tick = now;
-            motor_output_all_stop();
+            (void) actuator_manager_stop();
         }
         else if ((now - g_arm_start_tick) >=
                  RC_ARM_HOLD_TIME_TICKS)
         {
-            g_flight_safety_state = FLIGHT_SAFETY_ARMED;
-            g_stop_reason = FLIGHT_SAFETY_STOP_NONE;
-            imu_zero_yaw();
+            if (ACTUATOR_MANAGER_STATUS_OK ==
+                actuator_manager_authorize())
+            {
+                g_flight_safety_state = FLIGHT_SAFETY_ARMED;
+                g_stop_reason = FLIGHT_SAFETY_STOP_NONE;
+                imu_zero_yaw();
+            }
+            else
+            {
+                g_stop_reason = FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR;
+                g_seen_arm_switch_low = false;
+                flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
+            }
         }
 
         return;
@@ -180,4 +190,20 @@ flight_safety_stop_reason_t flight_safety_get_stop_reason(void)
 bool flight_safety_is_armed(void)
 {
     return FLIGHT_SAFETY_ARMED == g_flight_safety_state;
+}
+
+
+void flight_safety_force_failsafe(flight_safety_stop_reason_t reason)
+{
+    if ((FLIGHT_SAFETY_STOP_IMU_UNHEALTHY != reason) &&
+        (FLIGHT_SAFETY_STOP_RC_LOSS != reason) &&
+        (FLIGHT_SAFETY_STOP_CONTROL_FAULT != reason) &&
+        (FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR != reason))
+    {
+        reason = FLIGHT_SAFETY_STOP_CONTROL_FAULT;
+    }
+
+    g_stop_reason = reason;
+    g_seen_arm_switch_low = false;
+    flight_safety_stop(FLIGHT_SAFETY_FAILSAFE);
 }

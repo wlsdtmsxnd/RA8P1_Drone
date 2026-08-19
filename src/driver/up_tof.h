@@ -7,11 +7,12 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+#include "up_tof_protocol.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
 #define UP_TOF_SIGNAL_TIMEOUT_MS       (200U)
-#define UP_TOF_FLOW_VALID_VALUE        (0xF5U)
 
 typedef struct
 {
@@ -31,8 +32,10 @@ typedef struct
     uint32_t uart_error_count;
     uint32_t rx_overflow_count;
     TickType_t last_frame_tick;
+    bool frame_valid;
     bool flow_valid;
-    bool valid;
+    bool tof_valid;
+    bool velocity_valid;
 } up_tof_data_t;
 
 extern volatile up_tof_data_t g_up_tof_data;

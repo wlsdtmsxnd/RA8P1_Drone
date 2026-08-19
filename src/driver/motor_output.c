@@ -183,7 +183,11 @@ motor_output_status_t motor_output_init(void)
 
     g_motor_channels[3].counts_per_us = counts_per_us;
     g_motor_output_ready = true;
-    motor_output_all_stop();
+    if (MOTOR_OUTPUT_STATUS_OK != motor_output_all_stop())
+    {
+        g_motor_output_ready = false;
+        return MOTOR_OUTPUT_STATUS_FSP_ERROR;
+    }
 
     err = R_GPT_Start(&g_motor_gpt5_ctrl);
 
@@ -259,17 +263,23 @@ uint32_t motor_output_get_us(uint32_t motor_index)
 }
 
 
-void motor_output_all_stop(void)
+motor_output_status_t motor_output_all_stop(void)
 {
     uint32_t motor_index;
+    motor_output_status_t aggregate_status = MOTOR_OUTPUT_STATUS_OK;
 
     for (motor_index = 0U;
          motor_index < MOTOR_OUTPUT_COUNT;
          motor_index++)
     {
-        (void) motor_output_set_us(motor_index,
-                                   MOTOR_OUTPUT_MIN_US);
+        if (MOTOR_OUTPUT_STATUS_OK !=
+            motor_output_set_us(motor_index, MOTOR_OUTPUT_MIN_US))
+        {
+            aggregate_status = MOTOR_OUTPUT_STATUS_FSP_ERROR;
+        }
     }
+
+    return aggregate_status;
 }
 
 

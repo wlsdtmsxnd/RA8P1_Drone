@@ -1,7 +1,9 @@
 #include "imu_thread.h"
+#include "code/actuator_manager.h"
 #include "code/esc_bench_test.h"
 #include "code/flight_safety.h"
 #include "code/flight_control.h"
+#include "code/flight_snapshot.h"
 #include "code/imu.h"
 #include "code/imu_feedback_bench_test.h"
 #include "code/imu_cascade_bench_test.h"
@@ -10,7 +12,6 @@
 #include "code/project_config.h"
 #include "code/rc_attitude_bench_test.h"
 #include "code/rc_yaw_rate_bench_test.h"
-#include "driver/motor_output.h"
 
 /* ICM42688 软件片选引脚：P710。 */
 #define ICM42688_CS_PIN    BSP_IO_PORT_07_PIN_10
@@ -35,14 +36,14 @@ void imu_thread_entry(void * pvParameters)
     imu_status_t imu_status;         /* IMU 初始化或更新状态。 */
     uint32_t imu_calibration_attempt; /* 静止标定尝试次数。 */
 #endif
-    motor_output_status_t motor_status;
+    actuator_manager_status_t actuator_status;
 
     FSP_PARAMETER_NOT_USED(pvParameters);
 
     /* 先启动 1000 us 安全脉宽，再初始化任何可能失败的传感器。 */
-    motor_status = motor_output_init();
+    actuator_status = actuator_manager_init();
 
-    if (MOTOR_OUTPUT_STATUS_OK != motor_status)
+    if (ACTUATOR_MANAGER_STATUS_OK != actuator_status)
     {
         vTaskSuspend(NULL);
     }
@@ -72,7 +73,7 @@ void imu_thread_entry(void * pvParameters)
             (imu_calibration_attempt < IMU_CALIBRATION_MAX_ATTEMPTS))
         {
             /* 重试等待期间始终保持四路 1000 us。 */
-            motor_output_all_stop();
+            (void) actuator_manager_stop();
             vTaskDelay(pdMS_TO_TICKS(IMU_CALIBRATION_RETRY_DELAY_MS));
         }
     }
@@ -85,7 +86,7 @@ void imu_thread_entry(void * pvParameters)
          * 初始化失败。
          * 调试时观察 imu_status，并在 icm42688_init 内查看具体返回位置。
          */
-        motor_output_all_stop();
+        (void) actuator_manager_inhibit();
 
         while (1)
         {
@@ -105,7 +106,7 @@ void imu_thread_entry(void * pvParameters)
 
 #if (IMU_DIAGNOSTIC_MODE == IMU_DIAGNOSTIC_MODE_RAW_REREAD)
         /* 诊断模式不运行任何控制器，并在每个 2 ms 周期重申安全输出。 */
-        motor_output_all_stop();
+        (void) actuator_manager_inhibit();
 #elif (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
         flight_control_update(IMU_STATUS_OK == imu_status);
 #elif (PROP_LOAD_TEST_MODE == PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
@@ -129,6 +130,9 @@ void imu_thread_entry(void * pvParameters)
        (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_PID_I_SHADOW))
         flight_control_update(IMU_STATUS_OK == imu_status);
 #endif
+
+        /* 遥测只读取这一份控制周期末尾快照，避免跨周期拼接。 */
+        flight_snapshot_publish(IMU_STATUS_OK == imu_status);
 
         /*
          * 绝对周期延时，减少任务执行时间引起的周期累计误差。

@@ -1,10 +1,11 @@
 #include "imu_feedback_bench_test.h"
 
+#include "actuator_manager.h"
 #include "flight_safety.h"
 #include "imu.h"
 #include "project_config.h"
+#include "quad_x_mixer.h"
 #include "rc_command.h"
-#include "../driver/motor_output.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -56,13 +57,14 @@ void imu_feedback_bench_test_update(bool imu_healthy)
     float base_us;
     float roll_correction_us;
     float pitch_correction_us;
-    float motor_us[MOTOR_OUTPUT_COUNT];
+    float motor_us[ACTUATOR_MANAGER_COUNT];
+    uint32_t actuator_us[ACTUATOR_MANAGER_COUNT];
     uint32_t motor_index;
 
     if ((false == imu_healthy) ||
         (false == flight_safety_is_armed()))
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         return;
     }
 
@@ -74,7 +76,7 @@ void imu_feedback_bench_test_update(bool imu_healthy)
         (fabsf(command.pitch) > IMU_TEST_STICK_NEUTRAL_LIMIT) ||
         (fabsf(command.yaw) > IMU_TEST_STICK_NEUTRAL_LIMIT))
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         return;
     }
 
@@ -83,7 +85,7 @@ void imu_feedback_bench_test_update(bool imu_healthy)
     if ((fabsf(attitude.roll_deg) > IMU_TEST_TILT_CUTOFF_DEG) ||
         (fabsf(attitude.pitch_deg) > IMU_TEST_TILT_CUTOFF_DEG))
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         return;
     }
 
@@ -101,22 +103,24 @@ void imu_feedback_bench_test_update(bool imu_healthy)
         -IMU_TEST_CORRECTION_LIMIT_US,
         IMU_TEST_CORRECTION_LIMIT_US);
 
-    motor_us[0] = base_us + pitch_correction_us + roll_correction_us;
-    motor_us[1] = base_us + pitch_correction_us - roll_correction_us;
-    motor_us[2] = base_us - pitch_correction_us - roll_correction_us;
-    motor_us[3] = base_us - pitch_correction_us + roll_correction_us;
+    quad_x_mixer_apply(base_us,
+                       roll_correction_us,
+                       pitch_correction_us,
+                       0.0f,
+                       motor_us);
 
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
-        if (MOTOR_OUTPUT_STATUS_OK !=
-            motor_output_set_us(motor_index,
-                                imu_test_to_us(motor_us[motor_index])))
-        {
-            motor_output_all_stop();
-            return;
-        }
+        actuator_us[motor_index] = imu_test_to_us(motor_us[motor_index]);
+    }
+
+    if (ACTUATOR_MANAGER_STATUS_OK !=
+        actuator_manager_apply_us(actuator_us))
+    {
+        flight_safety_force_failsafe(
+            FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR);
     }
 #else
     (void) imu_healthy;

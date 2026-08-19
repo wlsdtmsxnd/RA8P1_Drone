@@ -17,7 +17,9 @@ typedef enum
     FLIGHT_SAFETY_STOP_IMU_UNHEALTHY,
     FLIGHT_SAFETY_STOP_RC_LOSS,
     FLIGHT_SAFETY_STOP_ARM_SWITCH_LOW,
-    FLIGHT_SAFETY_STOP_ARM_SWITCH_NOT_HIGH
+    FLIGHT_SAFETY_STOP_ARM_SWITCH_NOT_HIGH,
+    FLIGHT_SAFETY_STOP_CONTROL_FAULT,
+    FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR
 } flight_safety_stop_reason_t;
 
 void flight_safety_init(void);
@@ -28,6 +30,9 @@ void flight_safety_update(bool imu_healthy);
 flight_safety_state_t flight_safety_get_state(void);
 flight_safety_stop_reason_t flight_safety_get_stop_reason(void);
 bool flight_safety_is_armed(void);
+
+/* 下游发现 IMU/失联/控制/执行器故障时统一进入 FAILSAFE。 */
+void flight_safety_force_failsafe(flight_safety_stop_reason_t reason);
 
 /* 调试器可直接观察，量产逻辑仍应通过访问函数读取。 */
 extern volatile flight_safety_state_t g_flight_safety_state;

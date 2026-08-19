@@ -1,11 +1,12 @@
 #include "flight_control.h"
 
+#include "actuator_manager.h"
 #include "flight_safety.h"
 #include "imu.h"
 #include "pid_controller.h"
 #include "project_config.h"
+#include "quad_x_mixer.h"
 #include "rc_command.h"
-#include "../driver/motor_output.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -14,8 +15,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if (FLIGHT_CONTROL_MOTOR_COUNT != MOTOR_OUTPUT_COUNT)
-#error "Flight control and motor output counts must match"
+#if (FLIGHT_CONTROL_MOTOR_COUNT != ACTUATOR_MANAGER_COUNT)
+#error "Flight control and actuator manager counts must match"
+#endif
+
+#if (FLIGHT_CONTROL_MOTOR_COUNT != QUAD_X_MIXER_MOTOR_COUNT)
+#error "Flight control and mixer motor counts must match"
 #endif
 
 static flight_control_status_t g_flight_control_status =
@@ -50,13 +55,13 @@ static flight_control_fault_reason_t g_flight_control_fault_reason =
 #define PROP_LOAD_TEST_TILT_CUTOFF_DEG         (10.0f)
 #define PROP_LOAD_TEST_RATE_CUTOFF_DPS         (100.0f)
 
-static float g_prop_load_output_us = (float) MOTOR_OUTPUT_MIN_US;
+static float g_prop_load_output_us = (float) ACTUATOR_MANAGER_MIN_US;
 
 
 static void flight_control_prop_load_stop(void)
 {
-    g_prop_load_output_us = (float) MOTOR_OUTPUT_MIN_US;
-    motor_output_all_stop();
+    g_prop_load_output_us = (float) ACTUATOR_MANAGER_MIN_US;
+    (void) actuator_manager_stop();
 }
 
 
@@ -64,9 +69,9 @@ static uint32_t flight_control_prop_load_slew(float target_us)
 {
     float delta_us;
 
-    if (target_us < (float) MOTOR_OUTPUT_MIN_US)
+    if (target_us < (float) ACTUATOR_MANAGER_MIN_US)
     {
-        target_us = (float) MOTOR_OUTPUT_MIN_US;
+        target_us = (float) ACTUATOR_MANAGER_MIN_US;
     }
     else if (target_us > PROP_LOAD_TEST_OUTPUT_MAX_US)
     {
@@ -101,6 +106,7 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
     float throttle;
     float target_us;
     uint32_t output_us;
+    uint32_t output_frame[ACTUATOR_MANAGER_COUNT];
     uint32_t motor_index;
 
 #if (PROP_LOAD_TEST_MODE != PROP_LOAD_TEST_MODE_VIBRATION_BASELINE)
@@ -123,6 +129,12 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
         (true == command.throttle_low))
     {
         flight_control_prop_load_stop();
+
+        if (false == command.connected)
+        {
+            flight_safety_force_failsafe(FLIGHT_SAFETY_STOP_RC_LOSS);
+        }
+
         return;
     }
 
@@ -140,6 +152,7 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
         (fabsf(attitude.gyro_z_dps) > PROP_LOAD_TEST_RATE_CUTOFF_DPS))
     {
         flight_control_prop_load_stop();
+        flight_safety_force_failsafe(FLIGHT_SAFETY_STOP_CONTROL_FAULT);
         return;
     }
 
@@ -154,20 +167,23 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
         throttle = 1.0f;
     }
 
-    target_us = (float) MOTOR_OUTPUT_MIN_US +
+    target_us = (float) ACTUATOR_MANAGER_MIN_US +
                 (throttle * PROP_LOAD_TEST_OUTPUT_RANGE_US);
     output_us = flight_control_prop_load_slew(target_us);
 
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
-        if (MOTOR_OUTPUT_STATUS_OK !=
-            motor_output_set_us(motor_index, output_us))
-        {
-            flight_control_prop_load_stop();
-            return;
-        }
+        output_frame[motor_index] = output_us;
+    }
+
+    if (ACTUATOR_MANAGER_STATUS_OK !=
+        actuator_manager_apply_us(output_frame))
+    {
+        flight_control_prop_load_stop();
+        flight_safety_force_failsafe(
+            FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR);
     }
 }
 
@@ -292,7 +308,7 @@ static bool g_controllers_configured = false;
 #define FLIGHT_TEST_OUTPUT_RISE_US_PER_UPDATE (1.0f)
 #define FLIGHT_TEST_OUTPUT_FALL_US_PER_UPDATE (2.0f)
 
-static float g_powered_output_us[MOTOR_OUTPUT_COUNT] =
+static float g_powered_output_us[ACTUATOR_MANAGER_COUNT] =
 {
     1000.0f,
     1000.0f,
@@ -306,8 +322,7 @@ static float g_powered_output_us[MOTOR_OUTPUT_COUNT] =
 #define TETHERED_BASE_RISE_US_PER_UPDATE       (0.4f)
 #define TETHERED_BASE_FALL_US_PER_UPDATE       (0.5f)
 
-static float g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
-static bool g_tethered_fault_latched = false;
+static float g_tethered_base_us = (float) ACTUATOR_MANAGER_MIN_US;
 #endif
 
 
@@ -401,7 +416,7 @@ static uint32_t flight_test_to_us(float value)
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
 static void flight_control_reset_tethered_base(void)
 {
-    g_tethered_base_us = (float) MOTOR_OUTPUT_MIN_US;
+    g_tethered_base_us = (float) ACTUATOR_MANAGER_MIN_US;
 }
 
 
@@ -581,7 +596,7 @@ static void flight_test_reset_powered_output(void)
     uint32_t motor_index;
 
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
         g_powered_output_us[motor_index] = 1000.0f;
@@ -638,7 +653,11 @@ void flight_control_update(bool imu_healthy)
     float roll_correction_us;
     float pitch_correction_us;
     float yaw_correction_us;
-    float motor_us[MOTOR_OUTPUT_COUNT];
+    float motor_us[ACTUATOR_MANAGER_COUNT];
+#if ((CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_SHADOW_CONTROL) && \
+     (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_PID_I_SHADOW))
+    uint32_t actuator_us[ACTUATOR_MANAGER_COUNT];
+#endif
     uint32_t motor_index;
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
     flight_control_fault_reason_t fault_reason;
@@ -649,31 +668,17 @@ void flight_control_update(bool imu_healthy)
     if ((false == imu_healthy) ||
         (false == flight_safety_is_armed()))
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
         flight_test_reset_powered_output();
 #endif
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
         flight_control_reset_tethered_base();
-        /* 只有CH5撤防/失联后才允许清除上一次保护锁存。 */
-        g_tethered_fault_latched = false;
-        g_flight_control_fault_reason = FLIGHT_CONTROL_FAULT_NONE;
 #endif
         flight_control_reset_controllers();
         flight_control_publish_stopped();
         return;
     }
-
-#if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-    if (true == g_tethered_fault_latched)
-    {
-        motor_output_all_stop();
-        flight_control_reset_tethered_base();
-        flight_control_reset_controllers();
-        flight_control_publish_stopped();
-        return;
-    }
-#endif
 
     rc_command_get(&command);
 
@@ -683,7 +688,7 @@ void flight_control_update(bool imu_healthy)
      */
     if (false == command.connected)
     {
-        motor_output_all_stop();
+        flight_safety_force_failsafe(FLIGHT_SAFETY_STOP_RC_LOSS);
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
         flight_test_reset_powered_output();
 #endif
@@ -698,6 +703,8 @@ void flight_control_update(bool imu_healthy)
     imu_get_attitude(&attitude);
 
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
+    /* 只有完成低档复位并重新解锁后才清除上一故障证据。 */
+    g_flight_control_fault_reason = FLIGHT_CONTROL_FAULT_NONE;
     fault_reason = flight_control_tethered_fault_reason(&attitude);
 
     if (FLIGHT_CONTROL_FAULT_NONE != fault_reason)
@@ -716,10 +723,9 @@ void flight_control_update(bool imu_healthy)
     {
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
         /* 倾角/非有限数保护触发后禁止在CH5仍为高档时自动重新启动。 */
-        g_tethered_fault_latched = true;
         g_flight_control_fault_reason = fault_reason;
 #endif
-        motor_output_all_stop();
+        flight_safety_force_failsafe(FLIGHT_SAFETY_STOP_CONTROL_FAULT);
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
         flight_test_reset_powered_output();
 #endif
@@ -812,17 +818,14 @@ void flight_control_update(bool imu_healthy)
         flight_control_reset_controllers();
     }
 
-    motor_us[0] = base_us + pitch_correction_us +
-                  roll_correction_us - yaw_correction_us;
-    motor_us[1] = base_us + pitch_correction_us -
-                  roll_correction_us + yaw_correction_us;
-    motor_us[2] = base_us - pitch_correction_us -
-                  roll_correction_us - yaw_correction_us;
-    motor_us[3] = base_us - pitch_correction_us +
-                  roll_correction_us + yaw_correction_us;
+    quad_x_mixer_apply(base_us,
+                       roll_correction_us,
+                       pitch_correction_us,
+                       yaw_correction_us,
+                       motor_us);
 
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
         motor_us[motor_index] = flight_test_clampf(
@@ -834,7 +837,7 @@ void flight_control_update(bool imu_healthy)
 #if ((CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_SHADOW_CONTROL) || \
      (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_PID_I_SHADOW))
     /* 影子模式只观察控制计算，实际四路 GPT 始终保持停机脉宽。 */
-    motor_output_all_stop();
+    (void) actuator_manager_stop();
     flight_control_publish_active(motor_us,
                                   base_us,
                                   yaw_target_rate_dps,
@@ -843,34 +846,35 @@ void flight_control_update(bool imu_healthy)
                                   yaw_correction_us);
 #else
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
-        if (MOTOR_OUTPUT_STATUS_OK !=
-            motor_output_set_us(motor_index,
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
-                                flight_test_slew_to_us(motor_index,
-                                                       motor_us[motor_index])))
+        actuator_us[motor_index] = flight_test_slew_to_us(
+            motor_index,
+            motor_us[motor_index]);
 #else
-                                flight_test_to_us(motor_us[motor_index])))
+        actuator_us[motor_index] = flight_test_to_us(motor_us[motor_index]);
 #endif
-        {
+    }
+
+    if (ACTUATOR_MANAGER_STATUS_OK !=
+        actuator_manager_apply_us(actuator_us))
+    {
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-            g_tethered_fault_latched = true;
-            g_flight_control_fault_reason =
-                FLIGHT_CONTROL_FAULT_MOTOR_OUTPUT;
+        g_flight_control_fault_reason = FLIGHT_CONTROL_FAULT_MOTOR_OUTPUT;
 #endif
-            motor_output_all_stop();
+        flight_safety_force_failsafe(
+            FLIGHT_SAFETY_STOP_MOTOR_OUTPUT_ERROR);
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
-            flight_test_reset_powered_output();
+        flight_test_reset_powered_output();
 #endif
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
-            flight_control_reset_tethered_base();
+        flight_control_reset_tethered_base();
 #endif
-            flight_control_reset_controllers();
-            flight_control_publish_stopped();
-            return;
-        }
+        flight_control_reset_controllers();
+        flight_control_publish_stopped();
+        return;
     }
     flight_control_publish_active(motor_us,
                                   base_us,

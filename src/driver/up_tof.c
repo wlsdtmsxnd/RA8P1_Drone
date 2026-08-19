@@ -3,10 +3,6 @@
 #include <stddef.h>
 
 #define UP_TOF_RX_BUFFER_SIZE          (256U)
-#define UP_TOF_PAYLOAD_SIZE            (10U)
-#define UP_TOF_HEADER_BYTE             (0xFEU)
-#define UP_TOF_LENGTH_BYTE             (0x0AU)
-#define UP_TOF_TAIL_BYTE               (0x55U)
 
 typedef enum
 {
@@ -21,8 +17,8 @@ static uart_instance_t const * g_up_tof_uart = NULL;
 static volatile uint8_t g_up_tof_rx_buffer[UP_TOF_RX_BUFFER_SIZE];
 static volatile uint16_t g_up_tof_rx_head = 0U;
 static volatile uint16_t g_up_tof_rx_tail = 0U;
-static uint8_t g_up_tof_payload[UP_TOF_PAYLOAD_SIZE];
-static uint8_t g_up_tof_payload_index = 0U;
+static uint8_t g_up_tof_frame[UP_TOF_PROTOCOL_FRAME_SIZE];
+static uint8_t g_up_tof_frame_index = 0U;
 static uint8_t g_up_tof_xor = 0U;
 static up_tof_parse_state_t g_up_tof_parse_state = UP_TOF_PARSE_WAIT_HEADER;
 
@@ -31,89 +27,54 @@ volatile up_tof_data_t g_up_tof_data = {0};
 _Static_assert((UP_TOF_RX_BUFFER_SIZE & (UP_TOF_RX_BUFFER_SIZE - 1U)) == 0U,
                "UP_TOF_RX_BUFFER_SIZE must be a power of two");
 
-static uint16_t up_tof_read_u16_le(uint8_t const * p_data)
-{
-    return (uint16_t) (((uint16_t) p_data[1] << 8U) | (uint16_t) p_data[0]);
-}
-
-static int16_t up_tof_read_i16_le(uint8_t const * p_data)
-{
-    return (int16_t) up_tof_read_u16_le(p_data);
-}
-
-static int32_t up_tof_scale_displacement_mm(int16_t flow_integral,
-                                            uint16_t distance_mm)
-{
-    int32_t numerator = (int32_t) flow_integral * (int32_t) distance_mm;
-
-    if (numerator >= 0)
-    {
-        numerator += 5000;
-    }
-    else
-    {
-        numerator -= 5000;
-    }
-
-    return numerator / 10000;
-}
-
-static int32_t up_tof_scale_velocity_cm_s(int32_t displacement_mm,
-                                          uint16_t integration_us)
-{
-    int64_t numerator;
-
-    if (0U == integration_us)
-    {
-        return 0;
-    }
-
-    numerator = (int64_t) displacement_mm * 100000LL;
-
-    if (numerator >= 0)
-    {
-        numerator += (int64_t) integration_us / 2LL;
-    }
-    else
-    {
-        numerator -= (int64_t) integration_us / 2LL;
-    }
-
-    return (int32_t) (numerator / (int64_t) integration_us);
-}
-
 static void up_tof_reset_parser(void)
 {
     g_up_tof_parse_state = UP_TOF_PARSE_WAIT_HEADER;
-    g_up_tof_payload_index = 0U;
+    g_up_tof_frame_index = 0U;
     g_up_tof_xor = 0U;
 }
 
-static void up_tof_publish_payload(void)
+static void up_tof_publish_frame(void)
 {
+    up_tof_protocol_sample_t sample;
+    up_tof_protocol_decode_status_t status;
     up_tof_data_t data;
 
-    data = g_up_tof_data;
-    data.flow_x_integral = up_tof_read_i16_le(&g_up_tof_payload[0]);
-    data.flow_y_integral = up_tof_read_i16_le(&g_up_tof_payload[2]);
-    data.integration_us = up_tof_read_u16_le(&g_up_tof_payload[4]);
-    data.distance_mm = up_tof_read_u16_le(&g_up_tof_payload[6]);
-    data.flow_valid_raw = g_up_tof_payload[8];
-    data.tof_confidence = g_up_tof_payload[9];
-    data.displacement_x_mm =
-        up_tof_scale_displacement_mm(data.flow_x_integral, data.distance_mm);
-    data.displacement_y_mm =
-        up_tof_scale_displacement_mm(data.flow_y_integral, data.distance_mm);
-    data.velocity_x_cm_s =
-        up_tof_scale_velocity_cm_s(data.displacement_x_mm, data.integration_us);
-    data.velocity_y_cm_s =
-        up_tof_scale_velocity_cm_s(data.displacement_y_mm, data.integration_us);
-    data.flow_valid = (UP_TOF_FLOW_VALID_VALUE == data.flow_valid_raw);
-    data.valid = data.flow_valid;
-    data.frame_count++;
-    data.last_frame_tick = xTaskGetTickCount();
+    status = up_tof_protocol_decode_frame(g_up_tof_frame,
+                                          sizeof(g_up_tof_frame),
+                                          &sample);
+    if (UP_TOF_PROTOCOL_DECODE_OK != status)
+    {
+        if (UP_TOF_PROTOCOL_DECODE_CHECKSUM_ERROR == status)
+        {
+            g_up_tof_data.checksum_error_count++;
+        }
+        else
+        {
+            g_up_tof_data.parse_error_count++;
+        }
+
+        return;
+    }
 
     taskENTER_CRITICAL();
+    data = g_up_tof_data;
+    data.flow_x_integral = sample.flow_x_integral;
+    data.flow_y_integral = sample.flow_y_integral;
+    data.integration_us = sample.integration_us;
+    data.distance_mm = sample.distance_mm;
+    data.flow_valid_raw = sample.flow_valid_raw;
+    data.tof_confidence = sample.tof_confidence;
+    data.displacement_x_mm = sample.displacement_x_mm;
+    data.displacement_y_mm = sample.displacement_y_mm;
+    data.velocity_x_cm_s = sample.velocity_x_cm_s;
+    data.velocity_y_cm_s = sample.velocity_y_cm_s;
+    data.frame_valid = true;
+    data.flow_valid = sample.flow_valid;
+    data.tof_valid = sample.tof_valid;
+    data.velocity_valid = sample.velocity_valid;
+    data.frame_count++;
+    data.last_frame_tick = xTaskGetTickCount();
     g_up_tof_data = data;
     taskEXIT_CRITICAL();
 }
@@ -124,8 +85,10 @@ static void up_tof_parse_byte(uint8_t received_byte)
     {
         case UP_TOF_PARSE_WAIT_HEADER:
         {
-            if (UP_TOF_HEADER_BYTE == received_byte)
+            if (UP_TOF_PROTOCOL_HEADER_BYTE == received_byte)
             {
+                g_up_tof_frame[0] = received_byte;
+                g_up_tof_frame_index = 1U;
                 g_up_tof_parse_state = UP_TOF_PARSE_WAIT_LENGTH;
             }
 
@@ -134,16 +97,26 @@ static void up_tof_parse_byte(uint8_t received_byte)
 
         case UP_TOF_PARSE_WAIT_LENGTH:
         {
-            if (UP_TOF_LENGTH_BYTE == received_byte)
+            if (UP_TOF_PROTOCOL_LENGTH_BYTE == received_byte)
             {
-                g_up_tof_parse_state = UP_TOF_PARSE_PAYLOAD;
-                g_up_tof_payload_index = 0U;
+                g_up_tof_frame[1] = received_byte;
+                g_up_tof_frame_index = 2U;
                 g_up_tof_xor = 0U;
+                g_up_tof_parse_state = UP_TOF_PARSE_PAYLOAD;
             }
             else
             {
                 g_up_tof_data.parse_error_count++;
-                up_tof_reset_parser();
+
+                if (UP_TOF_PROTOCOL_HEADER_BYTE == received_byte)
+                {
+                    g_up_tof_frame[0] = received_byte;
+                    g_up_tof_frame_index = 1U;
+                }
+                else
+                {
+                    up_tof_reset_parser();
+                }
             }
 
             break;
@@ -151,11 +124,12 @@ static void up_tof_parse_byte(uint8_t received_byte)
 
         case UP_TOF_PARSE_PAYLOAD:
         {
-            g_up_tof_payload[g_up_tof_payload_index] = received_byte;
-            g_up_tof_payload_index++;
+            g_up_tof_frame[g_up_tof_frame_index] = received_byte;
+            g_up_tof_frame_index++;
             g_up_tof_xor ^= received_byte;
 
-            if (UP_TOF_PAYLOAD_SIZE == g_up_tof_payload_index)
+            if ((2U + UP_TOF_PROTOCOL_PAYLOAD_SIZE) ==
+                g_up_tof_frame_index)
             {
                 g_up_tof_parse_state = UP_TOF_PARSE_CHECKSUM;
             }
@@ -165,6 +139,8 @@ static void up_tof_parse_byte(uint8_t received_byte)
 
         case UP_TOF_PARSE_CHECKSUM:
         {
+            g_up_tof_frame[UP_TOF_PROTOCOL_FRAME_SIZE - 2U] = received_byte;
+
             if (received_byte == g_up_tof_xor)
             {
                 g_up_tof_parse_state = UP_TOF_PARSE_TAIL;
@@ -180,9 +156,11 @@ static void up_tof_parse_byte(uint8_t received_byte)
 
         case UP_TOF_PARSE_TAIL:
         {
-            if (UP_TOF_TAIL_BYTE == received_byte)
+            g_up_tof_frame[UP_TOF_PROTOCOL_FRAME_SIZE - 1U] = received_byte;
+
+            if (UP_TOF_PROTOCOL_TAIL_BYTE == received_byte)
             {
-                up_tof_publish_payload();
+                up_tof_publish_frame();
             }
             else
             {
@@ -305,15 +283,18 @@ void up_tof_get_data(up_tof_data_t * p_data)
 
     current_tick = xTaskGetTickCount();
 
-    if ((true == p_data->valid) &&
-        ((current_tick - p_data->last_frame_tick) <=
+    if ((!p_data->frame_valid) ||
+        ((current_tick - p_data->last_frame_tick) >
          pdMS_TO_TICKS(UP_TOF_SIGNAL_TIMEOUT_MS)))
     {
-        p_data->valid = true;
-    }
-    else
-    {
-        p_data->valid = false;
+        p_data->frame_valid = false;
+        p_data->flow_valid = false;
+        p_data->tof_valid = false;
+        p_data->velocity_valid = false;
+        p_data->displacement_x_mm = 0;
+        p_data->displacement_y_mm = 0;
+        p_data->velocity_x_cm_s = 0;
+        p_data->velocity_y_cm_s = 0;
     }
 }
 
@@ -322,5 +303,5 @@ bool up_tof_is_ready(void)
     up_tof_data_t data;
 
     up_tof_get_data(&data);
-    return data.valid;
+    return data.frame_valid;
 }

@@ -1,8 +1,8 @@
 #include "esc_bench_test.h"
 
+#include "actuator_manager.h"
 #include "project_config.h"
 #include "rc_command.h"
-#include "../driver/motor_output.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -32,21 +32,18 @@ static bool g_sequence_started;
 #if (ESC_BENCH_MODE == ESC_BENCH_MODE_CALIBRATION)
 static bool esc_bench_all_set_us(uint32_t pulse_us)
 {
+    uint32_t output_us[ACTUATOR_MANAGER_COUNT];
     uint32_t motor_index;
-    bool success = true;
 
     for (motor_index = 0U;
-         motor_index < MOTOR_OUTPUT_COUNT;
+         motor_index < ACTUATOR_MANAGER_COUNT;
          motor_index++)
     {
-        if (MOTOR_OUTPUT_STATUS_OK !=
-            motor_output_set_us(motor_index, pulse_us))
-        {
-            success = false;
-        }
+        output_us[motor_index] = pulse_us;
     }
 
-    return success;
+    return ACTUATOR_MANAGER_STATUS_OK ==
+           actuator_manager_apply_us(output_us);
 }
 #endif
 
@@ -54,7 +51,7 @@ static bool esc_bench_all_set_us(uint32_t pulse_us)
 #if (ESC_BENCH_MODE != ESC_BENCH_MODE_DISABLED)
 static void esc_bench_output_error(void)
 {
-    motor_output_all_stop();
+    (void) actuator_manager_stop();
     g_active_motor = 0U;
     g_bench_phase = ESC_BENCH_PHASE_OUTPUT_ERROR;
 }
@@ -68,7 +65,7 @@ void esc_bench_test_init(void)
     g_elapsed_ms = 0U;
 
 #if (ESC_BENCH_MODE == ESC_BENCH_MODE_CALIBRATION)
-    if (true == esc_bench_all_set_us(MOTOR_OUTPUT_MAX_US))
+    if (true == esc_bench_all_set_us(ACTUATOR_MANAGER_MAX_US))
     {
         g_bench_phase = ESC_BENCH_PHASE_CALIBRATION_HIGH;
     }
@@ -77,13 +74,13 @@ void esc_bench_test_init(void)
         esc_bench_output_error();
     }
 #elif (ESC_BENCH_MODE == ESC_BENCH_MODE_MOTOR_SEQUENCE)
-    motor_output_all_stop();
+    (void) actuator_manager_stop();
     g_sequence_start_tick = 0U;
     g_seen_arm_switch_low = false;
     g_sequence_started = false;
     g_bench_phase = ESC_BENCH_PHASE_SEQUENCE_WAIT_LOW;
 #else
-    motor_output_all_stop();
+    (void) actuator_manager_stop();
     g_bench_phase = ESC_BENCH_PHASE_DISABLED;
 #endif
 }
@@ -92,7 +89,7 @@ void esc_bench_test_init(void)
 void esc_bench_test_update(void)
 {
 #if (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED)
-    motor_output_all_stop();
+    (void) actuator_manager_stop();
     g_active_motor = 0U;
     g_elapsed_ms = 0U;
     g_bench_phase = ESC_BENCH_PHASE_DISABLED;
@@ -106,7 +103,7 @@ void esc_bench_test_update(void)
 
     if (ESC_BENCH_PHASE_OUTPUT_ERROR == g_bench_phase)
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         return;
     }
 
@@ -114,7 +111,7 @@ void esc_bench_test_update(void)
     if ((elapsed_ms >= ESC_CALIBRATION_HIGH_TIME_MS) &&
         (ESC_BENCH_PHASE_CALIBRATION_HIGH == g_bench_phase))
     {
-        if (true == esc_bench_all_set_us(MOTOR_OUTPUT_MIN_US))
+        if (true == esc_bench_all_set_us(ACTUATOR_MANAGER_MIN_US))
         {
             g_bench_phase = ESC_BENCH_PHASE_CALIBRATION_LOW;
         }
@@ -128,12 +125,13 @@ void esc_bench_test_update(void)
     uint32_t sequence_elapsed_ms;
     uint32_t motor_slot_ms;
     uint32_t motor_index;
+    uint32_t output_us[ACTUATOR_MANAGER_COUNT];
 
     rc_command_get(&command);
 
     if (false == command.connected)
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         g_active_motor = 0U;
         g_seen_arm_switch_low = false;
         g_sequence_started = false;
@@ -155,7 +153,7 @@ void esc_bench_test_update(void)
 
     if (false == g_sequence_started)
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         g_active_motor = 0U;
 
         if (true == command.arm_switch_low)
@@ -182,7 +180,7 @@ void esc_bench_test_update(void)
     if ((false == command.arm_switch_high) ||
         (false == command.throttle_low))
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         g_active_motor = 0U;
         g_sequence_started = false;
 
@@ -215,11 +213,11 @@ void esc_bench_test_update(void)
     motor_slot_ms = MOTOR_TEST_RUN_TIME_MS + MOTOR_TEST_GAP_TIME_MS;
     motor_index = sequence_elapsed_ms / motor_slot_ms;
 
-    if (motor_index >= MOTOR_OUTPUT_COUNT)
+    if (motor_index >= ACTUATOR_MANAGER_COUNT)
     {
         if (ESC_BENCH_PHASE_COMPLETE != g_bench_phase)
         {
-            motor_output_all_stop();
+            (void) actuator_manager_stop();
             g_active_motor = 0U;
             g_bench_phase = ESC_BENCH_PHASE_COMPLETE;
         }
@@ -233,10 +231,16 @@ void esc_bench_test_update(void)
         if ((g_active_motor != (motor_index + 1U)) ||
             (ESC_BENCH_PHASE_MOTOR_RUNNING != g_bench_phase))
         {
-            motor_output_all_stop();
+            for (uint32_t output_index = 0U;
+                 output_index < ACTUATOR_MANAGER_COUNT;
+                 output_index++)
+            {
+                output_us[output_index] = ACTUATOR_MANAGER_MIN_US;
+            }
+            output_us[motor_index] = MOTOR_TEST_PULSE_US;
 
-            if (MOTOR_OUTPUT_STATUS_OK ==
-                motor_output_set_us(motor_index, MOTOR_TEST_PULSE_US))
+            if (ACTUATOR_MANAGER_STATUS_OK ==
+                actuator_manager_apply_us(output_us))
             {
                 g_active_motor = motor_index + 1U;
                 g_bench_phase = ESC_BENCH_PHASE_MOTOR_RUNNING;
@@ -249,7 +253,7 @@ void esc_bench_test_update(void)
     }
     else if (ESC_BENCH_PHASE_MOTOR_GAP != g_bench_phase)
     {
-        motor_output_all_stop();
+        (void) actuator_manager_stop();
         g_active_motor = 0U;
         g_bench_phase = ESC_BENCH_PHASE_MOTOR_GAP;
     }

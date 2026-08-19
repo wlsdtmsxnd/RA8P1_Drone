@@ -43,16 +43,42 @@ docs/           迁移、硬件、调试笔记
 - CH5 解锁 / 停机安全逻辑。
 - 编译期保护的电调行程校准与 M1–M4 无桨顺序测试。
 - UP_T3-001 / UP-T301 光流 TOF 的 UPIXELS 协议驱动与 VOFA 测试遥测源。
+- TPF/LC08 软件 I2C 光流驱动；当前只采集和诊断，不参与控制。
+- Roll/Pitch 姿态—角速度串级控制与 Yaw 角速度控制已具备系留测试 profile。
+- 所有动力命令统一经过执行器仲裁层；控制故障会进入全局 FAILSAFE。
 
-角度环、角速度环 PID 尚未接入电机输出（正常模式 ARMED 后四路仍保持
-1000 us）。详见 [docs/migration_status.md](docs/migration_status.md)。
-光流 TOF 的 FSP UART 配置和验收流程见
-[docs/up_tof_test_guide.md](docs/up_tof_test_guide.md)。
+仓库默认构建是 `SAFE`：即使 ARMED，控制与测试代码也没有提高 PWM 的调用
+路径。系留和台架固件必须通过显式编译器 profile 构建，不能通过提交一个
+长期为 `1U` 的授权位启用。当前架构边界见
+[docs/architecture.md](docs/architecture.md)，迁移状态见
+[docs/migration_status.md](docs/migration_status.md)。
 
 ## 构建
 
 用 e2 studio 打开工程（`ra8p1_project1`），使用 FSP 生成器确认外设配置后
 编译即可。构建产物输出到 `Debug/`（已在 `.gitignore` 中忽略）。
 
-> 安全提示：任何电调测试模式（`src/code/project_config.h` 的
-> `ESC_BENCH_MODE`）都必须在拆除全部螺旋桨后方可启用。
+不增加任何预处理宏时生成 `PROJECT_BUILD_PROFILE_SAFE`。只有重新完成现场
+安全确认后，才可在专用构建配置中同时增加：
+
+```text
+PROJECT_BUILD_PROFILE=1U
+PROJECT_DANGEROUS_BUILD_ACK=0x54455448UL
+```
+
+这会选择 `PROJECT_BUILD_PROFILE_TETHERED_FIRST_HOP`。测试结束后必须切回
+无额外宏的 SAFE 配置，执行 `clean all` 并重新烧录。
+
+当前 `Debug` 和 `Release` 都不包含上述两个宏，均构建默认 SAFE。以后新建
+系留专用配置时再显式加入，并在烧录前核对实际选择的构建配置。
+
+代码变更后可在 PowerShell 中运行：
+
+```powershell
+tests\run_host_tests.ps1
+tests\run_profile_syntax_checks.ps1
+tests\verify_safe_elf.ps1
+```
+
+> 安全提示：编译确认值只用于阻止误构建，不能替代拆桨、系留、隔离区、
+> 急停和独立断电等现场确认。
