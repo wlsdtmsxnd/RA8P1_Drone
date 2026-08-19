@@ -55,9 +55,10 @@ TOF 失效时速度强制为 0；不能把 65535 mm 代入速度公式。UART �
 
 ## 4. VOFA+ 通道
 
-无额外编译宏的 SAFE 构建已经选择 `TELEMETRY_SOURCE_FLOW_TOF`。当前工程的
-Debug 和 Release 均已移除系留 profile/ack 宏，可以用于本项拆桨测试。3DR
-数传仍按其自身串口配置连接 VOFA+，协议选择 JustFloat，共 16 通道、50 Hz：
+无额外编译宏的 SAFE 构建默认显示融合后的导航数据。需要复测本节原始协议
+通道时，在专用构建配置中设置
+`TELEMETRY_SOURCE=TELEMETRY_SOURCE_FLOW_TOF`。Debug 和 Release 均不含
+系留 profile/ack，可用于拆桨测试。VOFA+ 选择 JustFloat，共 16 通道、50 Hz：
 
 | 通道 | 含义 | 正常预期 |
 |---|---|---|
@@ -122,5 +123,5 @@ Debug 和 Release 均已移除系留 profile/ack 宏，可以用于本项拆桨�
 - 静止速度无持续偏置；双向移动符号相反且重复测试一致。
 - 弱纹理、弱光、TOF 超量程和断线时，各有效标志按上述规则独立降级。
 
-完成这些测试后再决定机体系 X/Y 的交换和正负号，并在融合层做坐标变换；
-当前驱动保持模块原始坐标，不直接接入位置闭环。
+完成这些测试后按 `flow_navigation_test_guide.md` 验证机体系方向、影子闭环和
+系留闭环；协议驱动保持模块原始坐标，安装方向只在导航层配置。

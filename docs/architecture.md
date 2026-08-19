@@ -3,7 +3,7 @@
 ## 运行链路
 
 ```text
-UART/SPI/I2C 驱动与中断
+UART/SPI 驱动与中断
         ↓
 RC、IMU、导航传感器采集任务
         ↓ 一致数据快照
@@ -17,8 +17,9 @@ motor_output（GPT 硬件驱动）
 ```
 
 遥测是上述快照的消费者，不得初始化、轮询或拥有控制所需的传感器。UART
-TOF 和 TPF/LC08 当前由低优先级导航采集任务维护；3DR 失败不影响传感器
-采集。
+UP-T301 UPIX 串口由低优先级导航采集任务维护；IMU 任务以 500 Hz 运行
+`flow_navigation`，发布高度、水平速度和积分位置快照。3DR 失败不影响采集
+和控制。
 
 ## 必须保持的约束
 
@@ -40,6 +41,9 @@ TOF 和 TPF/LC08 当前由低优先级导航采集任务维护；3DR 失败不�
 
 - `driver/`：只处理器件协议和硬件错误，不决定飞行模式。
 - `imu.c`：原始采样守卫、标定、滤波和姿态估计。
+- `flow_navigation_core.c`：RA6M5 路线的 TOF/垂直加速度互补、光流低通、
+  陀螺补偿和速度积分位置；不依赖 FSP/FreeRTOS。
+- `flow_hold_controller.c`：定高与定点串级闭环、CH6 模式切换和失效降级。
 - `flight_safety.c`：解锁、失联、故障锁存和执行器授权。
 - `flight_control.c`：目标生成、PID、混控和控制故障检测；不直接访问 GPT。
 - `actuator_manager.c`：最终授权、整帧范围检查、PWM 提交和停机结果聚合。
@@ -49,7 +53,8 @@ TOF 和 TPF/LC08 当前由低优先级导航采集任务维护；3DR 失败不�
 
 ## 自动验证
 
-- `tests/run_host_tests.ps1`：在主机端验证 PID 限幅/复位与 Quad-X 混控符号。
+- `tests/run_host_tests.ps1`：在主机端验证 PID、Quad-X、UPIX 协议、导航融合、
+  定高/定点方向和失效降级。
 - `tests/run_profile_syntax_checks.ps1`：对 SAFE、系留、全部台架和诊断 profile
   的全部应用源码执行 `-Werror` 语法回归。
 - `tests/verify_safe_elf.ps1`：确认默认 ELF 中不存在执行器应用、飞控更新和
@@ -57,7 +62,6 @@ TOF 和 TPF/LC08 当前由低优先级导航采集任务维护；3DR 失败不�
 
 ## 后续演进
 
-在接入光流位置环、定高或自主模式前，应继续把 `flight_control.c` 中的纯
-计算拆成不依赖 FreeRTOS/FSP 的 `control_core` 与 `mixer`，并用主机单元
-测试覆盖混控符号、PID 复位/饱和、安全状态转换和协议解析。硬件 bench
-模式应复用这些生产模块，只替换输入或输出 sink。
+定高和定点已通过纯算法模块接入，下一步只按实机记录逐级调整本机架增益，
+不得直接复制 RA6M5 的 PID 数值。硬件 bench/影子模式继续复用生产控制器，
+只替换执行器输出授权。

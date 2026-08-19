@@ -5,6 +5,7 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $testRoot '..')).Path
 $buildRoot = Join-Path $testRoot 'build'
 $controlTestExecutable = Join-Path $buildRoot 'control_math_tests.exe'
 $upTofTestExecutable = Join-Path $buildRoot 'up_tof_protocol_tests.exe'
+$flowNavigationTestExecutable = Join-Path $buildRoot 'flow_navigation_tests.exe'
 
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
@@ -51,4 +52,28 @@ if ($LASTEXITCODE -ne 0)
 if ($LASTEXITCODE -ne 0)
 {
     throw 'UPIX UP-T301 protocol tests failed.'
+}
+
+& gcc `
+    -std=c99 `
+    -Wall `
+    -Wextra `
+    -Werror `
+    -I (Join-Path $repositoryRoot 'src') `
+    (Join-Path $testRoot 'test_flow_navigation.c') `
+    (Join-Path $repositoryRoot 'src\code\flow_navigation_core.c') `
+    (Join-Path $repositoryRoot 'src\code\flow_hold_controller.c') `
+    (Join-Path $repositoryRoot 'src\code\pid_controller.c') `
+    -o $flowNavigationTestExecutable
+
+if ($LASTEXITCODE -ne 0)
+{
+    throw 'Flow navigation host test compilation failed.'
+}
+
+& $flowNavigationTestExecutable
+
+if ($LASTEXITCODE -ne 0)
+{
+    throw 'Flow navigation and hold tests failed.'
 }

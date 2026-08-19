@@ -2,6 +2,8 @@
 
 #include "actuator_manager.h"
 #include "flight_safety.h"
+#include "flow_hold_controller.h"
+#include "flow_navigation.h"
 #include "imu.h"
 #include "pid_controller.h"
 #include "project_config.h"
@@ -297,11 +299,34 @@ void flight_control_prop_load_vibration_update(bool imu_healthy)
 #define FLIGHT_CONTROL_PERIOD_S                (0.002f)
 #define FLIGHT_CONTROL_DERIVATIVE_ALPHA        (0.20f)
 
+/*
+ * RA6M5 的位置外环/速度内环结构，按当前 mm、mm/s、度和 us 单位重整。
+ * 参数故意从低增益开始，必须先完成拆桨影子测试再逐级放开。
+ */
+#define FLOW_HOLD_HEIGHT_POSITION_KP           (1.0f)
+#define FLOW_HOLD_HEIGHT_VELOCITY_KP           (0.08f)
+#define FLOW_HOLD_HEIGHT_VELOCITY_KI           (0.02f)
+#define FLOW_HOLD_HEIGHT_I_LIMIT_US            (80.0f)
+#define FLOW_HOLD_HEIGHT_VELOCITY_LIMIT_MM_S  (300.0f)
+#define FLOW_HOLD_HEIGHT_CORRECTION_LIMIT_US  (150.0f)
+#define FLOW_HOLD_POSITION_KP                   (0.50f)
+#define FLOW_HOLD_VELOCITY_KP                   (0.020f)
+#define FLOW_HOLD_VELOCITY_KI                   (0.002f)
+#define FLOW_HOLD_VELOCITY_I_LIMIT_DEG          (2.0f)
+#define FLOW_HOLD_POSITION_VELOCITY_LIMIT_MM_S (300.0f)
+#define FLOW_HOLD_ANGLE_LIMIT_DEG                (5.0f)
+#define FLOW_HOLD_HEIGHT_TARGET_MIN_MM         (200.0f)
+#define FLOW_HOLD_HEIGHT_TARGET_MAX_MM        (2500.0f)
+#define FLOW_HOLD_THROTTLE_DEADBAND             (0.05f)
+#define FLOW_HOLD_THROTTLE_HEIGHT_RATE_MM_S    (600.0f)
+#define FLOW_HOLD_STICK_POSITION_RATE_MM_S     (400.0f)
+
 static pid_controller_t g_roll_angle_controller;
 static pid_controller_t g_pitch_angle_controller;
 static pid_controller_t g_roll_rate_controller;
 static pid_controller_t g_pitch_rate_controller;
 static pid_controller_t g_yaw_rate_controller;
+static flow_hold_controller_t g_flow_hold_controller;
 static bool g_controllers_configured = false;
 
 #if (CONTROL_BENCH_MODE == CONTROL_BENCH_MODE_POWERED_CONTROL)
@@ -386,6 +411,39 @@ static void flight_control_configure_controllers(void)
                              FLIGHT_TEST_YAW_RATE_I_LIMIT_US,
                              FLIGHT_TEST_YAW_CORRECTION_LIMIT_US,
                              FLIGHT_CONTROL_DERIVATIVE_ALPHA);
+
+    {
+        const flow_hold_config_t flow_hold_config =
+        {
+            .height_position_kp = FLOW_HOLD_HEIGHT_POSITION_KP,
+            .height_velocity_kp = FLOW_HOLD_HEIGHT_VELOCITY_KP,
+            .height_velocity_ki = FLOW_HOLD_HEIGHT_VELOCITY_KI,
+            .height_velocity_integrator_limit_us =
+                FLOW_HOLD_HEIGHT_I_LIMIT_US,
+            .height_velocity_limit_mm_s =
+                FLOW_HOLD_HEIGHT_VELOCITY_LIMIT_MM_S,
+            .height_correction_limit_us =
+                FLOW_HOLD_HEIGHT_CORRECTION_LIMIT_US,
+            .position_kp = FLOW_HOLD_POSITION_KP,
+            .velocity_kp = FLOW_HOLD_VELOCITY_KP,
+            .velocity_ki = FLOW_HOLD_VELOCITY_KI,
+            .velocity_integrator_limit_deg =
+                FLOW_HOLD_VELOCITY_I_LIMIT_DEG,
+            .position_velocity_limit_mm_s =
+                FLOW_HOLD_POSITION_VELOCITY_LIMIT_MM_S,
+            .angle_limit_deg = FLOW_HOLD_ANGLE_LIMIT_DEG,
+            .height_target_min_mm = FLOW_HOLD_HEIGHT_TARGET_MIN_MM,
+            .height_target_max_mm = FLOW_HOLD_HEIGHT_TARGET_MAX_MM,
+            .throttle_deadband = FLOW_HOLD_THROTTLE_DEADBAND,
+            .throttle_height_rate_mm_s =
+                FLOW_HOLD_THROTTLE_HEIGHT_RATE_MM_S,
+            .stick_position_rate_mm_s =
+                FLOW_HOLD_STICK_POSITION_RATE_MM_S
+        };
+
+        flow_hold_controller_init(&g_flow_hold_controller,
+                                  &flow_hold_config);
+    }
     g_controllers_configured = true;
 }
 
@@ -397,6 +455,7 @@ static void flight_control_reset_controllers(void)
     pid_controller_reset(&g_roll_rate_controller);
     pid_controller_reset(&g_pitch_rate_controller);
     pid_controller_reset(&g_yaw_rate_controller);
+    flow_hold_controller_reset(&g_flow_hold_controller);
 }
 
 
@@ -542,6 +601,15 @@ static void flight_control_publish_stopped(void)
     g_flight_control_status.roll_integrator_us = 0.0f;
     g_flight_control_status.pitch_integrator_us = 0.0f;
     g_flight_control_status.yaw_integrator_us = 0.0f;
+    g_flight_control_status.hold_roll_target_deg = 0.0f;
+    g_flight_control_status.hold_pitch_target_deg = 0.0f;
+    g_flight_control_status.height_correction_us = 0.0f;
+    g_flight_control_status.target_height_mm = 0.0f;
+    g_flight_control_status.target_position_x_mm = 0.0f;
+    g_flight_control_status.target_position_y_mm = 0.0f;
+    g_flight_control_status.hold_mode = (uint32_t) FLOW_HOLD_MODE_MANUAL;
+    g_flight_control_status.altitude_hold_active = false;
+    g_flight_control_status.position_hold_active = false;
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
     g_flight_control_status.fault_reason = g_flight_control_fault_reason;
 #else
@@ -558,7 +626,8 @@ static void flight_control_publish_active(
     float yaw_target_rate_dps,
     float roll_correction_us,
     float pitch_correction_us,
-    float yaw_correction_us)
+    float yaw_correction_us,
+    const flow_hold_output_t * p_hold_output)
 {
     uint32_t motor_index;
 
@@ -580,6 +649,40 @@ static void flight_control_publish_active(
         g_pitch_rate_controller.integrator;
     g_flight_control_status.yaw_integrator_us =
         g_yaw_rate_controller.integrator;
+    if (NULL != p_hold_output)
+    {
+        g_flight_control_status.hold_roll_target_deg =
+            p_hold_output->roll_target_deg;
+        g_flight_control_status.hold_pitch_target_deg =
+            p_hold_output->pitch_target_deg;
+        g_flight_control_status.height_correction_us =
+            p_hold_output->height_correction_us;
+        g_flight_control_status.target_height_mm =
+            p_hold_output->target_height_mm;
+        g_flight_control_status.target_position_x_mm =
+            p_hold_output->target_position_x_mm;
+        g_flight_control_status.target_position_y_mm =
+            p_hold_output->target_position_y_mm;
+        g_flight_control_status.hold_mode =
+            (uint32_t) p_hold_output->active_mode;
+        g_flight_control_status.altitude_hold_active =
+            p_hold_output->altitude_active;
+        g_flight_control_status.position_hold_active =
+            p_hold_output->position_active;
+    }
+    else
+    {
+        g_flight_control_status.hold_roll_target_deg = 0.0f;
+        g_flight_control_status.hold_pitch_target_deg = 0.0f;
+        g_flight_control_status.height_correction_us = 0.0f;
+        g_flight_control_status.target_height_mm = 0.0f;
+        g_flight_control_status.target_position_x_mm = 0.0f;
+        g_flight_control_status.target_position_y_mm = 0.0f;
+        g_flight_control_status.hold_mode =
+            (uint32_t) FLOW_HOLD_MODE_MANUAL;
+        g_flight_control_status.altitude_hold_active = false;
+        g_flight_control_status.position_hold_active = false;
+    }
 #if (TETHERED_FLIGHT_MODE == TETHERED_FLIGHT_MODE_FIRST_HOP)
     g_flight_control_status.fault_reason = g_flight_control_fault_reason;
 #else
@@ -654,6 +757,9 @@ void flight_control_update(bool imu_healthy)
     float pitch_correction_us;
     float yaw_correction_us;
     float motor_us[ACTUATOR_MANAGER_COUNT];
+    flow_navigation_state_t navigation;
+    flow_hold_input_t hold_input;
+    flow_hold_output_t hold_output;
 #if ((CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_SHADOW_CONTROL) && \
      (CONTROL_BENCH_MODE != CONTROL_BENCH_MODE_PID_I_SHADOW))
     uint32_t actuator_us[ACTUATOR_MANAGER_COUNT];
@@ -760,6 +866,42 @@ void flight_control_update(bool imu_healthy)
     target_pitch_deg = flight_test_clampf(command.pitch, -1.0f, 1.0f) *
                        FLIGHT_TEST_TARGET_ANGLE_DEG;
 
+    flow_navigation_get_state(&navigation);
+    hold_input = (flow_hold_input_t)
+    {
+        .requested_mode = (RC_MODE_HIGH == command.mode) ?
+                          FLOW_HOLD_MODE_POSITION :
+                          ((RC_MODE_MIDDLE == command.mode) ?
+                           FLOW_HOLD_MODE_ALTITUDE :
+                           FLOW_HOLD_MODE_MANUAL),
+        .manual_base_us = base_us,
+        .manual_roll_target_deg = target_roll_deg,
+        .manual_pitch_target_deg = target_pitch_deg,
+        .throttle = command.throttle,
+        .roll_stick = command.roll,
+        .pitch_stick = command.pitch,
+        .yaw_deg = attitude.yaw_deg,
+        .height_mm = navigation.height_mm,
+        .vertical_velocity_mm_s = navigation.vertical_velocity_mm_s,
+        .position_x_mm = navigation.position_x_mm,
+        .position_y_mm = navigation.position_y_mm,
+        .velocity_x_mm_s = navigation.velocity_x_mm_s,
+        .velocity_y_mm_s = navigation.velocity_y_mm_s,
+        .enabled = (FLOW_HOLD_CONTROL_ENABLED == 1U) &&
+                   (!command.throttle_low),
+        .height_valid = navigation.height_valid,
+        .flow_valid = navigation.flow_valid
+    };
+    flow_hold_controller_update(&g_flow_hold_controller,
+                                &hold_input,
+                                FLIGHT_CONTROL_PERIOD_S,
+                                &hold_output);
+    base_us = flight_test_clampf(hold_output.base_us,
+                                 FLIGHT_TEST_BASE_MIN_US,
+                                 FLIGHT_TEST_BASE_MAX_US);
+    target_roll_deg = hold_output.roll_target_deg;
+    target_pitch_deg = hold_output.pitch_target_deg;
+
     roll_target_rate_dps = pid_controller_update(
         &g_roll_angle_controller,
         target_roll_deg,
@@ -843,7 +985,8 @@ void flight_control_update(bool imu_healthy)
                                   yaw_target_rate_dps,
                                   roll_correction_us,
                                   pitch_correction_us,
-                                  yaw_correction_us);
+                                  yaw_correction_us,
+                                  &hold_output);
 #else
     for (motor_index = 0U;
          motor_index < ACTUATOR_MANAGER_COUNT;
@@ -881,7 +1024,8 @@ void flight_control_update(bool imu_healthy)
                                   yaw_target_rate_dps,
                                   roll_correction_us,
                                   pitch_correction_us,
-                                  yaw_correction_us);
+                                  yaw_correction_us,
+                                  &hold_output);
 #endif
 #else
     (void) imu_healthy;

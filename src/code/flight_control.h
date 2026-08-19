@@ -2,6 +2,7 @@
 #define CODE_FLIGHT_CONTROL_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define FLIGHT_CONTROL_MOTOR_COUNT    (4U)
 
@@ -28,6 +29,15 @@ typedef struct st_flight_control_status
     float roll_integrator_us;
     float pitch_integrator_us;
     float yaw_integrator_us;
+    float hold_roll_target_deg;
+    float hold_pitch_target_deg;
+    float height_correction_us;
+    float target_height_mm;
+    float target_position_x_mm;
+    float target_position_y_mm;
+    uint32_t hold_mode;
+    bool altitude_hold_active;
+    bool position_hold_active;
     flight_control_fault_reason_t fault_reason;
     bool valid;
 } flight_control_status_t;

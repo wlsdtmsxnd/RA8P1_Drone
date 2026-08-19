@@ -29,6 +29,7 @@ docs/           迁移、硬件、调试笔记
 | ICM42688 CS | P710 | GPIO，低有效 |
 | CRSF RX / TX | P602 / P603 | SCI0，420000 baud |
 | 3DR 数传 RX / TX | P802 / P801 | SCI2，57600 baud |
+| UP-T301 TX / RX | P905 / P310 | SCI3，460800 baud |
 | M1 / M2 | P700 / P701 | GPT5 A / B |
 | M3 / M4 | P109 / P702 | GPT10 A / GPT6 A |
 
@@ -42,8 +43,9 @@ docs/           迁移、硬件、调试笔记
 - 四路 GPT PWM 输出与电机脉宽限幅。
 - CH5 解锁 / 停机安全逻辑。
 - 编译期保护的电调行程校准与 M1–M4 无桨顺序测试。
-- UP_T3-001 / UP-T301 光流 TOF 的 UPIXELS 协议驱动与 VOFA 测试遥测源。
-- TPF/LC08 软件 I2C 光流驱动；当前只采集和诊断，不参与控制。
+- UP_T3-001 / UP-T301 UPIX 驱动、RA6M5 同结构的高度融合、光流速度积分位置。
+- CH6 中档定高、高档定高+定点的串级闭环；光流失效降级为定高，TOF
+  失效退回手动。旧 TPF/LC08 软件 I2C 驱动已移除。
 - Roll/Pitch 姿态—角速度串级控制与 Yaw 角速度控制已具备系留测试 profile。
 - 所有动力命令统一经过执行器仲裁层；控制故障会进入全局 FAILSAFE。
 
@@ -68,6 +70,10 @@ PROJECT_DANGEROUS_BUILD_ACK=0x54455448UL
 
 这会选择 `PROJECT_BUILD_PROFILE_TETHERED_FIRST_HOP`。测试结束后必须切回
 无额外宏的 SAFE 配置，执行 `clean all` 并重新烧录。
+
+拆桨验证导航闭环时只增加 `PROJECT_BUILD_PROFILE=3U`，进入四路始终为
+1000 us 的 `FLOW_HOLD_SHADOW`，且不得携带危险确认宏。完整流程见
+[docs/flow_navigation_test_guide.md](docs/flow_navigation_test_guide.md)。
 
 当前 `Debug` 和 `Release` 都不包含上述两个宏，均构建默认 SAFE。以后新建
 系留专用配置时再显式加入，并在烧录前核对实际选择的构建配置。

@@ -99,6 +99,10 @@ function New-CustomProfileDefines
 $profiles = @(
     @{ Name = 'safe'; Defines = @() },
     @{
+        Name = 'flow_hold_shadow'
+        Defines = @('-DPROJECT_BUILD_PROFILE=3U')
+    },
+    @{
         Name = 'tethered_first_hop'
         Defines = @(
             '-DPROJECT_BUILD_PROFILE=1U',

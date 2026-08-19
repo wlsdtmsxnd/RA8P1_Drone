@@ -48,6 +48,10 @@ typedef struct
     float gyro_x_dps;    /* X 轴滤波角速度，单位：度每秒。 */
     float gyro_y_dps;    /* Y 轴滤波角速度，单位：度每秒。 */
     float gyro_z_dps;    /* Z 轴滤波角速度，单位：度每秒。 */
+    float accel_x_g;     /* 机体系滤波加速度，单位：g。 */
+    float accel_y_g;
+    float accel_z_g;
+    float vertical_accel_mm_s2; /* 去重力后的地理系垂直加速度。 */
 } imu_attitude_t;
 
 /*

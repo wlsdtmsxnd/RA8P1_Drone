@@ -921,8 +921,9 @@ CH5 撤防、RC/IMU 异常和控制保护仍立即停机。当前尚未接入可
 | I22 | 低油门标志 | 0/1 |
 | I23 | Yaw 积分角（仅限单次短跳内观察） | deg |
 
-TOF 当前仍只在后台被动接收且不参与控制，但本轮系留遥测不再占用通道记录
-光流。需要恢复光流测试时切换到 `TELEMETRY_SOURCE_FLOW_TOF` 专用遥测源。
+本节是接入导航闭环前的历史系留布局。当前 UP-T301 已参与定高/定点，最新
+通道和分级步骤以 `telemetry_layouts.md`、`flow_navigation_test_guide.md` 为准；
+原始协议复测仍可切换到 `TELEMETRY_SOURCE_FLOW_TOF`。
 
 拆桨 Yaw 方向检查时，向右转动机头应同时看到 I8>0、I16<0、M1/M3
 高于 M2/M4。若任一符号不一致，禁止安装桨叶继续测试。

@@ -52,6 +52,7 @@
 #define IMU_RAW_GUARD_GYRO_ABS_COUNTS       (1312) /* 80 dps。 */
 #define IMU_RAW_GUARD_GYRO_STEP_COUNTS      (820)  /* 50 dps/2 ms。 */
 #define IMU_RAW_GUARD_ACCEL_STEP_COUNTS     (2048) /* 0.5 g/2 ms。 */
+#define IMU_GRAVITY_MM_S2                    (9806.65f)
 
 /* 二阶滤波器历史状态。 */
 typedef struct
@@ -419,6 +420,18 @@ static void imu_update_euler_angles(float gyro_x_dps,
     attitude.gyro_x_dps = gyro_x_dps;
     attitude.gyro_y_dps = gyro_y_dps;
     attitude.gyro_z_dps = gyro_z_dps;
+    attitude.accel_x_g = g_accel_lpf_x;
+    attitude.accel_y_g = g_accel_lpf_y;
+    attitude.accel_z_g = g_accel_lpf_z;
+    attitude.vertical_accel_mm_s2 =
+        (((g_accel_lpf_x *
+           (2.0f * ((g_q1 * g_q3) - (g_q0 * g_q2)))) +
+          (g_accel_lpf_y *
+           (2.0f * ((g_q0 * g_q1) + (g_q2 * g_q3)))) +
+          (g_accel_lpf_z *
+           ((g_q0 * g_q0) - (g_q1 * g_q1) -
+            (g_q2 * g_q2) + (g_q3 * g_q3)))) - 1.0f) *
+        IMU_GRAVITY_MM_S2;
 
     /*
      * 三个角度作为一组发布，避免串口任务读到不同周期的数据。

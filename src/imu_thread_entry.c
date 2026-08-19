@@ -4,6 +4,7 @@
 #include "code/flight_safety.h"
 #include "code/flight_control.h"
 #include "code/flight_snapshot.h"
+#include "code/flow_navigation.h"
 #include "code/imu.h"
 #include "code/imu_feedback_bench_test.h"
 #include "code/imu_cascade_bench_test.h"
@@ -35,6 +36,7 @@ void imu_thread_entry(void * pvParameters)
 #if (ESC_BENCH_MODE == ESC_BENCH_MODE_DISABLED)
     imu_status_t imu_status;         /* IMU 初始化或更新状态。 */
     uint32_t imu_calibration_attempt; /* 静止标定尝试次数。 */
+    imu_attitude_t navigation_attitude;
 #endif
     actuator_manager_status_t actuator_status;
 
@@ -100,6 +102,11 @@ void imu_thread_entry(void * pvParameters)
     while (1)
     {
         imu_status = imu_update();
+
+        imu_get_attitude(&navigation_attitude);
+        flow_navigation_update(&navigation_attitude,
+                               IMU_STATUS_OK == imu_status,
+                               0.002f);
 
         /* IMU 错误、遥控失联或未满足解锁条件都会强制 1000 us。 */
         flight_safety_update(IMU_STATUS_OK == imu_status);
